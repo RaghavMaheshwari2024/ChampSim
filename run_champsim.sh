@@ -41,5 +41,13 @@ if [ ! -f "$TRACE_DIR/$TRACE" ] ; then
     exit 1
 fi
 
+TRACE_BASENAME=$(basename "$TRACE")
+BASELINE_STATS_DIR=results_${N_SIM}M/baseline_stats
 mkdir -p results_${N_SIM}M
+mkdir -p "$BASELINE_STATS_DIR"
+
 (./bin/${BINARY} -warmup_instructions ${N_WARM}000000 -simulation_instructions ${N_SIM}000000 ${OPTION} -traces ${TRACE_DIR}/${TRACE}) &> results_${N_SIM}M/${TRACE}-${BINARY}${OPTION}.txt
+
+if [ -f "champsim_baseline_stats.txt" ] ; then
+    cp "champsim_baseline_stats.txt" "$BASELINE_STATS_DIR/${TRACE_BASENAME}-${BINARY}${OPTION}.txt"
+fi

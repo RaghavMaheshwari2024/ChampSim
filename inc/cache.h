@@ -135,6 +135,24 @@ class CACHE : public MEMORY {
              roi_miss[NUM_CPUS][NUM_TYPES];
 
     uint64_t total_miss_latency;
+    uint64_t llc_miss_count;
+    uint64_t llc_replacement_latency;
+    uint64_t llc_writeback_latency;
+    uint64_t llc_invalidation_latency;
+    uint64_t llc_refill_latency;
+    uint64_t llc_total_miss_latency;
+    uint64_t llc_writeback_count;
+    uint64_t llc_refill_count;
+    uint64_t llc_total_evictions;
+    uint64_t llc_dirty_evictions;
+    uint64_t llc_clean_evictions;
+    uint64_t llc_total_dirty_writebacks;
+    uint64_t llc_eviction_latency;
+    uint64_t llc_memory_stall_cycles;
+    uint64_t llc_wq_occupancy_sum;
+    uint64_t llc_wq_occupancy_samples;
+    uint64_t llc_dirty_line_lifetime_sum;
+    uint64_t llc_dirty_line_lifetime_count;
     
     // constructor
     CACHE(string v1, uint32_t v2, int v3, uint32_t v4, uint32_t v5, uint32_t v6, uint32_t v7, uint32_t v8) 
@@ -197,6 +215,25 @@ class CACHE : public MEMORY {
         pf_useful = 0;
         pf_useless = 0;
         pf_fill = 0;
+
+        llc_miss_count = 0;
+        llc_replacement_latency = 0;
+        llc_writeback_latency = 0;
+        llc_invalidation_latency = 0;
+        llc_refill_latency = 0;
+        llc_total_miss_latency = 0;
+        llc_writeback_count = 0;
+        llc_refill_count = 0;
+        llc_total_evictions = 0;
+        llc_dirty_evictions = 0;
+        llc_clean_evictions = 0;
+        llc_total_dirty_writebacks = 0;
+        llc_eviction_latency = 0;
+        llc_memory_stall_cycles = 0;
+        llc_wq_occupancy_sum = 0;
+        llc_wq_occupancy_samples = 0;
+        llc_dirty_line_lifetime_sum = 0;
+        llc_dirty_line_lifetime_count = 0;
     };
 
 

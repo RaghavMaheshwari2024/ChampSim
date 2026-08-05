@@ -36,6 +36,9 @@ Execute `run_champsim.sh` with proper input arguments. The default `TRACE_DIR` i
 ```
 Usage: ./run_champsim.sh [BINARY] [N_WARM] [N_SIM] [TRACE] [OPTION]
 $ ./run_champsim.sh bimodal-no-no-no-no-lru-1core 10 50 605.mcf_s-1554B.champsimtrace.xz
+$ ./run_champsim.sh bimodal-no-no-no-no-lru-1core 10 50 605.mcf_s-1644B.champsimtrace.xz
+$ ./run_champsim.sh bimodal-no-no-no-no-lru-1core 10 50 619.lbm_s-2676B.champsimtrace.xz
+
 
 ${BINARY}: ChampSim binary compiled by "build_champsim.sh" (bimodal-no-no-lru-1core)
 ${N_WARM}: number of instructions for warmup (1 million)

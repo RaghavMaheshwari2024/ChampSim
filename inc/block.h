@@ -30,6 +30,7 @@ class BLOCK {
 
     // replacement state
     uint32_t lru;
+    uint64_t dirty_since_cycle;
 
     BLOCK() {
         valid = 0;
@@ -52,6 +53,7 @@ class BLOCK {
         instr_id = 0;
 
         lru = 0;
+        dirty_since_cycle = UINT64_MAX;
     };
 };
 
@@ -120,7 +122,15 @@ class PACKET {
              instr_id,
              ip, 
              event_cycle,
-             cycle_enqueued;
+             cycle_enqueued,
+             llc_miss_cycle,
+             llc_repl_start_cycle,
+             llc_victim_selected_cycle,
+             llc_victim_invalidated_cycle,
+             llc_writeback_begin_cycle,
+             llc_writeback_complete_cycle,
+             llc_refill_start_cycle,
+             llc_refill_complete_cycle;
 
     PACKET() {
         instruction = 0;
@@ -138,6 +148,15 @@ class PACKET {
         asid[0] = UINT8_MAX;
         asid[1] = UINT8_MAX;
         type = 0;
+
+        llc_miss_cycle = UINT64_MAX;
+        llc_repl_start_cycle = UINT64_MAX;
+        llc_victim_selected_cycle = UINT64_MAX;
+        llc_victim_invalidated_cycle = UINT64_MAX;
+        llc_writeback_begin_cycle = UINT64_MAX;
+        llc_writeback_complete_cycle = UINT64_MAX;
+        llc_refill_start_cycle = UINT64_MAX;
+        llc_refill_complete_cycle = UINT64_MAX;
 
         fill_level = -1; 
         rob_signal = -1;

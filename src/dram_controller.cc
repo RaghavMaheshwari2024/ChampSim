@@ -322,6 +322,9 @@ void MEMORY_CONTROLLER::process(PACKET_QUEUE *queue)
                 // update data bus cycle time
                 dbus_cycle_available[op_channel] = current_core_cycle[op_cpu] + DRAM_DBUS_RETURN_TIME;
                 queue->entry[request_index].event_cycle = dbus_cycle_available[op_channel]; 
+                if (queue->entry[request_index].llc_refill_start_cycle != UINT64_MAX) {
+                    queue->entry[request_index].llc_refill_complete_cycle = queue->entry[request_index].event_cycle;
+                }
 
                 DP ( if (warmup_complete[op_cpu]) {
                 cout << "[" << queue->NAME << "] " <<  __func__ << " return data" << hex;
@@ -484,6 +487,7 @@ int MEMORY_CONTROLLER::add_rq(PACKET *packet)
         }
     }
 
+    RQ[channel].ACCESS++;
     update_schedule_cycle(&RQ[channel]);
 
     return -1;
@@ -526,6 +530,7 @@ int MEMORY_CONTROLLER::add_wq(PACKET *packet)
         }
     }
 
+    WQ[channel].ACCESS++;
     update_schedule_cycle(&WQ[channel]);
 
     return -1;

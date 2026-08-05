@@ -86,6 +86,35 @@ if(cache->NAME=="L2C")
     cout << " PREFETCH  REQUESTED: " << setw(10) << cache->pf_requested << "  ISSUED: " << setw(10) << cache->pf_issued;
     cout << "  USEFUL: " << setw(10) << cache->pf_useful << "  USELESS: " << setw(10) << cache->pf_useless << endl;
 
+    if (cache->NAME == "LLC") {
+        if (cache->llc_miss_count)
+            cout << cache->NAME << " AVERAGE LLC MISS LATENCY: " << (1.0 * cache->llc_total_miss_latency) / cache->llc_miss_count << " cycles" << endl;
+        else
+            cout << cache->NAME << " AVERAGE LLC MISS LATENCY: -" << endl;
+
+        if (cache->llc_refill_count)
+            cout << cache->NAME << " AVERAGE LLC REFILL LATENCY: " << (1.0 * cache->llc_refill_latency) / cache->llc_refill_count << " cycles" << endl;
+        else
+            cout << cache->NAME << " AVERAGE LLC REFILL LATENCY: -" << endl;
+
+        if (cache->llc_writeback_count)
+            cout << cache->NAME << " AVERAGE DIRTY WRITEBACK LATENCY: " << (1.0 * cache->llc_writeback_latency) / cache->llc_writeback_count << " cycles" << endl;
+        else
+            cout << cache->NAME << " AVERAGE DIRTY WRITEBACK LATENCY: -" << endl;
+
+        cout << cache->NAME << " AVERAGE EVICTION LATENCY: " << (cache->llc_total_evictions ? (1.0 * cache->llc_eviction_latency) / cache->llc_total_evictions : 0.0) << " cycles" << endl;
+        cout << cache->NAME << " AVERAGE REPLACEMENT LATENCY: " << (cache->llc_miss_count ? (1.0 * cache->llc_replacement_latency) / cache->llc_miss_count : 0.0) << " cycles" << endl;
+        cout << cache->NAME << " AVERAGE INVALIDATION LATENCY: " << (cache->llc_miss_count ? (1.0 * cache->llc_invalidation_latency) / cache->llc_miss_count : 0.0) << " cycles" << endl;
+        cout << cache->NAME << " TOTAL EVICTIONS: " << cache->llc_total_evictions << endl;
+        cout << cache->NAME << " DIRTY EVICTIONS: " << cache->llc_dirty_evictions << endl;
+        cout << cache->NAME << " CLEAN EVICTIONS: " << cache->llc_clean_evictions << endl;
+        cout << cache->NAME << " DIRTY VICTIM PERCENTAGE: " << (cache->llc_total_evictions ? (100.0 * cache->llc_dirty_evictions) / cache->llc_total_evictions : 0.0) << "%" << endl;
+        cout << cache->NAME << " TOTAL DIRTY WRITEBACKS: " << cache->llc_total_dirty_writebacks << endl;
+        cout << cache->NAME << " MEMORY STALL CYCLES: " << cache->llc_memory_stall_cycles << endl;
+        cout << cache->NAME << " AVERAGE WQ OCCUPANCY: " << (cache->llc_wq_occupancy_samples ? (1.0 * cache->llc_wq_occupancy_sum) / cache->llc_wq_occupancy_samples : 0.0) << " cycles" << endl;
+        cout << cache->NAME << " AVERAGE DIRTY LINE LIFETIME: " << (cache->llc_dirty_line_lifetime_count ? (1.0 * cache->llc_dirty_line_lifetime_sum) / cache->llc_dirty_line_lifetime_count : 0.0) << " cycles" << endl;
+    }
+
     cout << cache->NAME;
     cout << " AVERAGE MISS LATENCY: " << (1.0*(cache->total_miss_latency))/TOTAL_MISS << " cycles" << endl;
     //cout << " AVERAGE MISS LATENCY: " << (cache->total_miss_latency)/TOTAL_MISS << " cycles " << cache->total_miss_latency << "/" << TOTAL_MISS<< endl;
@@ -115,26 +144,176 @@ void print_sim_stats(uint32_t cpu, CACHE *cache)
 
     cout << cache->NAME;
     cout << " WRITEBACK ACCESS: " << setw(10) << cache->sim_access[cpu][3] << "  HIT: " << setw(10) << cache->sim_hit[cpu][3] << "  MISS: " << setw(10) << cache->sim_miss[cpu][3] << endl;
+
+    if (cache->NAME == "LLC") {
+        if (cache->llc_miss_count)
+            cout << cache->NAME << " AVERAGE LLC MISS LATENCY: " << (1.0 * cache->llc_total_miss_latency) / cache->llc_miss_count << " cycles" << endl;
+        else
+            cout << cache->NAME << " AVERAGE LLC MISS LATENCY: -" << endl;
+
+        if (cache->llc_refill_count)
+            cout << cache->NAME << " AVERAGE LLC REFILL LATENCY: " << (1.0 * cache->llc_refill_latency) / cache->llc_refill_count << " cycles" << endl;
+        else
+            cout << cache->NAME << " AVERAGE LLC REFILL LATENCY: -" << endl;
+
+        if (cache->llc_writeback_count)
+            cout << cache->NAME << " AVERAGE DIRTY WRITEBACK LATENCY: " << (1.0 * cache->llc_writeback_latency) / cache->llc_writeback_count << " cycles" << endl;
+        else
+            cout << cache->NAME << " AVERAGE DIRTY WRITEBACK LATENCY: -" << endl;
+
+        cout << cache->NAME << " AVERAGE EVICTION LATENCY: " << (cache->llc_total_evictions ? (1.0 * cache->llc_eviction_latency) / cache->llc_total_evictions : 0.0) << " cycles" << endl;
+        cout << cache->NAME << " AVERAGE REPLACEMENT LATENCY: " << (cache->llc_miss_count ? (1.0 * cache->llc_replacement_latency) / cache->llc_miss_count : 0.0) << " cycles" << endl;
+        cout << cache->NAME << " AVERAGE INVALIDATION LATENCY: " << (cache->llc_miss_count ? (1.0 * cache->llc_invalidation_latency) / cache->llc_miss_count : 0.0) << " cycles" << endl;
+        cout << cache->NAME << " TOTAL EVICTIONS: " << cache->llc_total_evictions << endl;
+        cout << cache->NAME << " DIRTY EVICTIONS: " << cache->llc_dirty_evictions << endl;
+        cout << cache->NAME << " CLEAN EVICTIONS: " << cache->llc_clean_evictions << endl;
+        cout << cache->NAME << " DIRTY VICTIM PERCENTAGE: " << (cache->llc_total_evictions ? (100.0 * cache->llc_dirty_evictions) / cache->llc_total_evictions : 0.0) << "%" << endl;
+        cout << cache->NAME << " TOTAL DIRTY WRITEBACKS: " << cache->llc_total_dirty_writebacks << endl;
+        cout << cache->NAME << " MEMORY STALL CYCLES: " << cache->llc_memory_stall_cycles << endl;
+        cout << cache->NAME << " AVERAGE WQ OCCUPANCY: " << (cache->llc_wq_occupancy_samples ? (1.0 * cache->llc_wq_occupancy_sum) / cache->llc_wq_occupancy_samples : 0.0) << " cycles" << endl;
+        cout << cache->NAME << " AVERAGE DIRTY LINE LIFETIME: " << (cache->llc_dirty_line_lifetime_count ? (1.0 * cache->llc_dirty_line_lifetime_sum) / cache->llc_dirty_line_lifetime_count : 0.0) << " cycles" << endl;
+        cout << cache->NAME << " DEADBLOCK EVICTIONS: " << cache->deadblock << endl;
+        cout << cache->NAME << " BYPASSED_WRITES: " << cache->bypassed_writes << endl;
+    }
 }
 
 void print_branch_stats()
 {
     for (uint32_t i=0; i<NUM_CPUS; i++) {
         cout << endl << "CPU " << i << " Branch Prediction Accuracy: ";
-        cout << (100.0*(ooo_cpu[i].num_branch - ooo_cpu[i].branch_mispredictions)) / ooo_cpu[i].num_branch;
-        cout << "% MPKI: " << (1000.0*ooo_cpu[i].branch_mispredictions)/(ooo_cpu[i].num_retired - ooo_cpu[i].warmup_instructions);
-	cout << " Average ROB Occupancy at Mispredict: " << (1.0*ooo_cpu[i].total_rob_occupancy_at_branch_mispredict)/ooo_cpu[i].branch_mispredictions << endl << endl;
-	
-	cout << "Branch types" << endl;
-	cout << "NOT_BRANCH: " << ooo_cpu[i].total_branch_types[0] << " " << (100.0*ooo_cpu[i].total_branch_types[0])/(ooo_cpu[i].num_retired - ooo_cpu[i].begin_sim_instr) << "%" << endl;
-	cout << "BRANCH_DIRECT_JUMP: " << ooo_cpu[i].total_branch_types[1] << " " << (100.0*ooo_cpu[i].total_branch_types[1])/(ooo_cpu[i].num_retired - ooo_cpu[i].begin_sim_instr) << "%" << endl;
-	cout << "BRANCH_INDIRECT: " << ooo_cpu[i].total_branch_types[2] << " " << (100.0*ooo_cpu[i].total_branch_types[2])/(ooo_cpu[i].num_retired - ooo_cpu[i].begin_sim_instr) << "%" << endl;
-	cout << "BRANCH_CONDITIONAL: " << ooo_cpu[i].total_branch_types[3] << " " << (100.0*ooo_cpu[i].total_branch_types[3])/(ooo_cpu[i].num_retired - ooo_cpu[i].begin_sim_instr) << "%" << endl;
-	cout << "BRANCH_DIRECT_CALL: " << ooo_cpu[i].total_branch_types[4] << " " << (100.0*ooo_cpu[i].total_branch_types[4])/(ooo_cpu[i].num_retired - ooo_cpu[i].begin_sim_instr) << "%" << endl;
-	cout << "BRANCH_INDIRECT_CALL: " << ooo_cpu[i].total_branch_types[5] << " " << (100.0*ooo_cpu[i].total_branch_types[5])/(ooo_cpu[i].num_retired - ooo_cpu[i].begin_sim_instr) << "%" << endl;
-	cout << "BRANCH_RETURN: " << ooo_cpu[i].total_branch_types[6] << " " << (100.0*ooo_cpu[i].total_branch_types[6])/(ooo_cpu[i].num_retired - ooo_cpu[i].begin_sim_instr) << "%" << endl;
-	cout << "BRANCH_OTHER: " << ooo_cpu[i].total_branch_types[7] << " " << (100.0*ooo_cpu[i].total_branch_types[7])/(ooo_cpu[i].num_retired - ooo_cpu[i].begin_sim_instr) << "%" << endl << endl;
+        if (ooo_cpu[i].num_branch)
+            cout << (100.0*(ooo_cpu[i].num_branch - ooo_cpu[i].branch_mispredictions)) / ooo_cpu[i].num_branch;
+        else
+            cout << "-";
+        cout << "% MPKI: ";
+        if (ooo_cpu[i].finish_sim_instr)
+            cout << (1000.0*ooo_cpu[i].branch_mispredictions)/ooo_cpu[i].finish_sim_instr;
+        else
+            cout << "-";
+        if (ooo_cpu[i].branch_mispredictions)
+            cout << " Average ROB Occupancy at Mispredict: " << (1.0*ooo_cpu[i].total_rob_occupancy_at_branch_mispredict)/ooo_cpu[i].branch_mispredictions << endl << endl;
+        else
+            cout << " Average ROB Occupancy at Mispredict: -" << endl << endl;
+
+        cout << "Branch types" << endl;
+        uint64_t branch_total = ooo_cpu[i].num_retired - ooo_cpu[i].begin_sim_instr;
+        auto branch_pct = [&](uint64_t type_count) {
+            return branch_total ? (100.0 * type_count) / branch_total : 0.0;
+        };
+        cout << "NOT_BRANCH: " << ooo_cpu[i].total_branch_types[0] << " " << branch_pct(ooo_cpu[i].total_branch_types[0]) << "%" << endl;
+        cout << "BRANCH_DIRECT_JUMP: " << ooo_cpu[i].total_branch_types[1] << " " << branch_pct(ooo_cpu[i].total_branch_types[1]) << "%" << endl;
+        cout << "BRANCH_INDIRECT: " << ooo_cpu[i].total_branch_types[2] << " " << branch_pct(ooo_cpu[i].total_branch_types[2]) << "%" << endl;
+        cout << "BRANCH_CONDITIONAL: " << ooo_cpu[i].total_branch_types[3] << " " << branch_pct(ooo_cpu[i].total_branch_types[3]) << "%" << endl;
+        cout << "BRANCH_DIRECT_CALL: " << ooo_cpu[i].total_branch_types[4] << " " << branch_pct(ooo_cpu[i].total_branch_types[4]) << "%" << endl;
+        cout << "BRANCH_INDIRECT_CALL: " << ooo_cpu[i].total_branch_types[5] << " " << branch_pct(ooo_cpu[i].total_branch_types[5]) << "%" << endl;
+        cout << "BRANCH_RETURN: " << ooo_cpu[i].total_branch_types[6] << " " << branch_pct(ooo_cpu[i].total_branch_types[6]) << "%" << endl;
+        cout << "BRANCH_OTHER: " << ooo_cpu[i].total_branch_types[7] << " " << branch_pct(ooo_cpu[i].total_branch_types[7]) << "%" << endl << endl;
     }
+}
+
+void write_stats_file()
+{
+    ofstream stats("champsim_baseline_stats.txt");
+    if (!stats.is_open()) {
+        cerr << "ERROR: cannot open champsim_baseline_stats.txt for writing" << endl;
+        return;
+    }
+
+    stats << "# ChampSim baseline statistics" << endl;
+    stats << "SIMULATION_INSTRUCTIONS=" << simulation_instructions << endl;
+    stats << "WARMUP_INSTRUCTIONS=" << warmup_instructions << endl;
+
+    for (uint32_t i=0; i<NUM_CPUS; i++) {
+        uint64_t instructions = ooo_cpu[i].finish_sim_instr;
+        uint64_t cycles = ooo_cpu[i].finish_sim_cycle;
+        double ipc = cycles ? (1.0 * instructions / cycles) : 0.0;
+        double cpi = instructions ? (1.0 * cycles / instructions) : 0.0;
+
+        stats << "CPU" << i << ".INSTRUCTIONS=" << instructions << endl;
+        stats << "CPU" << i << ".CYCLES=" << cycles << endl;
+        stats << "CPU" << i << ".IPC=" << ipc << endl;
+        stats << "CPU" << i << ".CPI=" << cpi << endl;
+        stats << "CPU" << i << ".BRANCH_MISPREDICTIONS=" << ooo_cpu[i].branch_mispredictions << endl;
+        stats << "CPU" << i << ".BRANCH_ACCURACY=";
+        if (ooo_cpu[i].num_branch)
+            stats << (100.0*(ooo_cpu[i].num_branch - ooo_cpu[i].branch_mispredictions))/ooo_cpu[i].num_branch;
+        else
+            stats << 0.0;
+        stats << endl;
+        stats << "CPU" << i << ".BRANCH_MPKI=";
+        if (instructions)
+            stats << (1000.0*ooo_cpu[i].branch_mispredictions)/instructions;
+        else
+            stats << 0.0;
+        stats << endl;
+        stats << "CPU" << i << ".ROB_OCCUPANCY_AT_MISPREDICT=";
+        if (ooo_cpu[i].branch_mispredictions)
+            stats << (1.0*ooo_cpu[i].total_rob_occupancy_at_branch_mispredict)/ooo_cpu[i].branch_mispredictions;
+        else
+            stats << 0.0;
+        stats << endl;
+
+        CACHE *caches[4] = {&ooo_cpu[i].L1D, &ooo_cpu[i].L1I, &ooo_cpu[i].L2C, &uncore.LLC};
+        for (uint32_t j=0; j<4; j++) {
+            CACHE *cache = caches[j];
+            stats << cache->NAME << ".LOAD.ACCESS=" << cache->roi_access[i][LOAD] << endl;
+            stats << cache->NAME << ".LOAD.HIT=" << cache->roi_hit[i][LOAD] << endl;
+            stats << cache->NAME << ".LOAD.MISS=" << cache->roi_miss[i][LOAD] << endl;
+            stats << cache->NAME << ".RFO.ACCESS=" << cache->roi_access[i][RFO] << endl;
+            stats << cache->NAME << ".RFO.HIT=" << cache->roi_hit[i][RFO] << endl;
+            stats << cache->NAME << ".RFO.MISS=" << cache->roi_miss[i][RFO] << endl;
+            stats << cache->NAME << ".PREFETCH.ACCESS=" << cache->roi_access[i][PREFETCH] << endl;
+            stats << cache->NAME << ".PREFETCH.HIT=" << cache->roi_hit[i][PREFETCH] << endl;
+            stats << cache->NAME << ".PREFETCH.MISS=" << cache->roi_miss[i][PREFETCH] << endl;
+            stats << cache->NAME << ".WRITEBACK.ACCESS=" << cache->roi_access[i][WRITEBACK] << endl;
+            stats << cache->NAME << ".WRITEBACK.HIT=" << cache->roi_hit[i][WRITEBACK] << endl;
+            stats << cache->NAME << ".WRITEBACK.MISS=" << cache->roi_miss[i][WRITEBACK] << endl;
+            uint64_t total_access = cache->roi_access[i][LOAD] + cache->roi_access[i][RFO] + cache->roi_access[i][PREFETCH] + cache->roi_access[i][WRITEBACK];
+            uint64_t total_hit = cache->roi_hit[i][LOAD] + cache->roi_hit[i][RFO] + cache->roi_hit[i][PREFETCH] + cache->roi_hit[i][WRITEBACK];
+            uint64_t total_miss = cache->roi_miss[i][LOAD] + cache->roi_miss[i][RFO] + cache->roi_miss[i][PREFETCH] + cache->roi_miss[i][WRITEBACK];
+            stats << cache->NAME << ".TOTAL.ACCESS=" << total_access << endl;
+            stats << cache->NAME << ".TOTAL.HIT=" << total_hit << endl;
+            stats << cache->NAME << ".TOTAL.MISS=" << total_miss << endl;
+            stats << cache->NAME << ".MPKI=" << (instructions ? (1000.0 * total_miss / instructions) : 0.0) << endl;
+            if (cache->NAME == "LLC") {
+                stats << cache->NAME << ".AVERAGE_LLC_MISS_LATENCY=" << (cache->llc_miss_count ? (1.0 * cache->llc_total_miss_latency) / cache->llc_miss_count : 0.0) << endl;
+                stats << cache->NAME << ".AVERAGE_LLC_REFILL_LATENCY=" << (cache->llc_refill_count ? (1.0 * cache->llc_refill_latency) / cache->llc_refill_count : 0.0) << endl;
+                stats << cache->NAME << ".AVERAGE_DIRTY_WRITEBACK_LATENCY=" << (cache->llc_writeback_count ? (1.0 * cache->llc_writeback_latency) / cache->llc_writeback_count : 0.0) << endl;
+                stats << cache->NAME << ".AVERAGE_REPLACEMENT_LATENCY=" << (cache->llc_miss_count ? (1.0 * cache->llc_replacement_latency) / cache->llc_miss_count : 0.0) << endl;
+                stats << cache->NAME << ".AVERAGE_INVALIDATION_LATENCY=" << (cache->llc_miss_count ? (1.0 * cache->llc_invalidation_latency) / cache->llc_miss_count : 0.0) << endl;
+                stats << cache->NAME << ".AVERAGE_EVICTION_LATENCY=" << (cache->llc_miss_count ? (1.0 * cache->llc_eviction_latency) / cache->llc_miss_count : 0.0) << endl;
+                stats << cache->NAME << ".TOTAL_EVICTIONS=" << cache->llc_total_evictions << endl;
+                stats << cache->NAME << ".DIRTY_EVICTIONS=" << cache->llc_dirty_evictions << endl;
+                stats << cache->NAME << ".CLEAN_EVICTIONS=" << cache->llc_clean_evictions << endl;
+                stats << cache->NAME << ".DIRTY_VICTIM_PERCENTAGE=" << (cache->llc_total_evictions ? (100.0 * cache->llc_dirty_evictions) / cache->llc_total_evictions : 0.0) << endl;
+                stats << cache->NAME << ".TOTAL_DIRTY_WRITEBACKS=" << cache->llc_total_dirty_writebacks << endl;
+                stats << cache->NAME << ".AVERAGE_WQ_OCCUPANCY=" << (cache->llc_wq_occupancy_samples ? (1.0 * cache->llc_wq_occupancy_sum) / cache->llc_wq_occupancy_samples : 0.0) << endl;
+                stats << cache->NAME << ".AVERAGE_DIRTY_LINE_LIFETIME=" << (cache->llc_dirty_line_lifetime_count ? (1.0 * cache->llc_dirty_line_lifetime_sum) / cache->llc_dirty_line_lifetime_count : 0.0) << endl;
+                stats << cache->NAME << ".MEMORY_STALL_CYCLES=" << cache->llc_memory_stall_cycles << endl;
+                stats << cache->NAME << ".DEADBLOCK_EVICTIONS=" << cache->deadblock << endl;
+                stats << cache->NAME << ".BYPASSED_WRITES=" << cache->bypassed_writes << endl;
+            }
+        }
+    }
+
+    for (uint32_t i=0; i<DRAM_CHANNELS; i++) {
+        stats << "DRAM.CHANNEL" << i << ".RQ.ACCESS=" << uncore.DRAM.RQ[i].ACCESS << endl;
+        stats << "DRAM.CHANNEL" << i << ".WQ.ACCESS=" << uncore.DRAM.WQ[i].ACCESS << endl;
+        stats << "DRAM.CHANNEL" << i << ".WQ.FORWARD=" << uncore.DRAM.WQ[i].FORWARD << endl;
+        stats << "DRAM.CHANNEL" << i << ".RQ.ROW_BUFFER_HIT=" << uncore.DRAM.RQ[i].ROW_BUFFER_HIT << endl;
+        stats << "DRAM.CHANNEL" << i << ".RQ.ROW_BUFFER_MISS=" << uncore.DRAM.RQ[i].ROW_BUFFER_MISS << endl;
+        stats << "DRAM.CHANNEL" << i << ".WQ.ROW_BUFFER_HIT=" << uncore.DRAM.WQ[i].ROW_BUFFER_HIT << endl;
+        stats << "DRAM.CHANNEL" << i << ".WQ.ROW_BUFFER_MISS=" << uncore.DRAM.WQ[i].ROW_BUFFER_MISS << endl;
+    }
+    stats << "DRAM.AVG_CONGESTED_CYCLE=";
+    uint64_t total_congested_cycle = 0;
+    for (uint32_t i=0; i<DRAM_CHANNELS; i++)
+        total_congested_cycle += uncore.DRAM.dbus_cycle_congested[i];
+    if (uncore.DRAM.dbus_congested[NUM_TYPES][NUM_TYPES])
+        stats << (total_congested_cycle / uncore.DRAM.dbus_congested[NUM_TYPES][NUM_TYPES]);
+    else
+        stats << 0;
+    stats << endl;
 }
 
 void print_dram_stats()
@@ -174,6 +353,24 @@ void reset_cache_stats(uint32_t cpu, CACHE *cache)
     }
 
     cache->total_miss_latency = 0;
+    cache->llc_miss_count = 0;
+    cache->llc_replacement_latency = 0;
+    cache->llc_writeback_latency = 0;
+    cache->llc_invalidation_latency = 0;
+    cache->llc_refill_latency = 0;
+    cache->llc_total_miss_latency = 0;
+    cache->llc_writeback_count = 0;
+    cache->llc_refill_count = 0;
+    cache->llc_total_evictions = 0;
+    cache->llc_dirty_evictions = 0;
+    cache->llc_clean_evictions = 0;
+    cache->llc_total_dirty_writebacks = 0;
+    cache->llc_eviction_latency = 0;
+    cache->llc_memory_stall_cycles = 0;
+    cache->llc_wq_occupancy_sum = 0;
+    cache->llc_wq_occupancy_samples = 0;
+    cache->llc_dirty_line_lifetime_sum = 0;
+    cache->llc_dirty_line_lifetime_count = 0;
 
     cache->pf_requested = 0;
     cache->pf_issued = 0;
@@ -996,10 +1193,11 @@ int main(int argc, char** argv)
     uncore.LLC.llc_prefetcher_final_stats();
 
 #ifndef CRC2_COMPILE
-    uncore.LLC.llc_replacement_final_stats();
+    // uncore.LLC.llc_replacement_final_stats();
     print_dram_stats();
     print_branch_stats();
 #endif
 
+    write_stats_file();
     return 0;
 }

@@ -22,7 +22,9 @@ void CACHE::handle_fill()
         // find victim
         uint32_t set = get_set(MSHR.entry[mshr_index].address), way;
         if (cache_type == IS_LLC) {
+            MSHR.entry[mshr_index].llc_repl_start_cycle = current_core_cycle[fill_cpu];
             way = llc_find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set, block[set], MSHR.entry[mshr_index].ip, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].type);
+            MSHR.entry[mshr_index].llc_victim_selected_cycle = current_core_cycle[fill_cpu];
         }
         else
             way = find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set, block[set], MSHR.entry[mshr_index].ip, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].type);
@@ -86,7 +88,6 @@ void CACHE::handle_fill()
 
         // is this dirty?
         if (block[set][way].dirty) {
-
             // check if the lower level WQ has enough room to keep this writeback request
             if (lower_level) {
                 if (lower_level->get_occupancy(2, block[set][way].address) == lower_level->get_size(2, block[set][way].address)) {
@@ -95,8 +96,10 @@ void CACHE::handle_fill()
                     do_fill = 0;
                     lower_level->increment_WQ_FULL(block[set][way].address);
                     STALL[MSHR.entry[mshr_index].type]++;
-                     if(cache_type==IS_LLC && all_warmup_complete>NUM_CPUS)
+                     if(cache_type==IS_LLC && all_warmup_complete>NUM_CPUS) {
                     llc_mshr_stalls++;
+                    llc_memory_stall_cycles++;
+                    }
                     else if(cache_type==IS_L2C && all_warmup_complete>NUM_CPUS)
                     l2_mshr_stalls++;
 
@@ -107,6 +110,24 @@ void CACHE::handle_fill()
                 }
                 else {
                     PACKET writeback_packet;
+
+                    if (cache_type == IS_LLC)
+                        writeback_packet.llc_writeback_begin_cycle = current_core_cycle[fill_cpu];
+
+                    if ((cache_type == IS_LLC) && block[set][way].valid) {
+                        llc_total_evictions++;
+                        if (block[set][way].dirty) {
+                            llc_dirty_evictions++;
+                            llc_total_dirty_writebacks++;
+                            if (block[set][way].dirty_since_cycle != UINT64_MAX) {
+                                llc_dirty_line_lifetime_sum += (current_core_cycle[fill_cpu] - block[set][way].dirty_since_cycle);
+                                llc_dirty_line_lifetime_count++;
+                                block[set][way].dirty_since_cycle = UINT64_MAX;
+                            }
+                        } else {
+                            llc_clean_evictions++;
+                        }
+                    }
 
                     writeback_packet.fill_level = fill_level << 1;
                     writeback_packet.cpu = fill_cpu;
@@ -151,6 +172,10 @@ void CACHE::handle_fill()
               
             // update replacement policy
             if (cache_type == IS_LLC) {
+                MSHR.entry[mshr_index].llc_victim_invalidated_cycle = current_core_cycle[fill_cpu];
+                llc_invalidation_latency += (MSHR.entry[mshr_index].llc_victim_invalidated_cycle - MSHR.entry[mshr_index].llc_victim_selected_cycle);
+                llc_replacement_latency += (MSHR.entry[mshr_index].llc_victim_selected_cycle - MSHR.entry[mshr_index].llc_repl_start_cycle);
+                llc_eviction_latency += (MSHR.entry[mshr_index].llc_victim_invalidated_cycle - MSHR.entry[mshr_index].llc_repl_start_cycle);
                 llc_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, block[set][way].full_addr, MSHR.entry[mshr_index].type, 0);
                if(block[set][way].used==0 && all_warmup_complete>NUM_CPUS && block[set][way].valid==1)
               deadblock++;
@@ -265,6 +290,10 @@ void CACHE::handle_writeback()
             // mark dirty
             if (cache_type == IS_LLC)
                 block[set][way].early_write_back = 0;
+            if (cache_type == IS_LLC) {
+                if (block[set][way].dirty_since_cycle == UINT64_MAX)
+                    block[set][way].dirty_since_cycle = current_core_cycle[writeback_cpu];
+            }
             block[set][way].dirty = 1;
            
 
@@ -696,7 +725,8 @@ void CACHE::handle_read()
 
 		  if(cache_type == IS_LLC)
 		    {
-		     // check to make sure the DRAM RQ has room for this LLC read miss
+		      RQ.entry[index].llc_miss_cycle = current_core_cycle[read_cpu];
+		      // check to make sure the DRAM RQ has room for this LLC read miss
 		      if (lower_level->get_occupancy(1, RQ.entry[index].address) == lower_level->get_size(1, RQ.entry[index].address))
 			{
 			  miss_handled = 0;
@@ -710,6 +740,7 @@ void CACHE::handle_read()
 			  add_mshr(&RQ.entry[index]);
 			  if(lower_level)
 			    {
+			      RQ.entry[index].llc_refill_start_cycle = current_core_cycle[read_cpu];
 			      lower_level->add_rq(&RQ.entry[index]);
 			    }
 			}
@@ -1119,8 +1150,15 @@ void CACHE::operate()
 {
     handle_fill();
     handle_writeback();
+
     if (cache_type == IS_LLC)
         retry_early_writebacks();
+
+    if ((cache_type == IS_LLC) && (all_warmup_complete > NUM_CPUS)) {
+        llc_wq_occupancy_sum += WQ.occupancy;
+        llc_wq_occupancy_samples++;
+    }
+
     reads_available_this_cycle = MAX_READ;
     handle_read();
 
@@ -1228,8 +1266,18 @@ void CACHE::fill_cache(uint32_t set, uint32_t way, PACKET *packet)
 
     if (block[set][way].valid == 0)
         block[set][way].valid = 1;
-    block[set][way].dirty = 0;
+
     block[set][way].early_write_back = 0;
+
+    if ((cache_type == IS_LLC) && (packet->type == WRITEBACK)) {
+        block[set][way].dirty = 1;
+        if (block[set][way].dirty_since_cycle == UINT64_MAX)
+            block[set][way].dirty_since_cycle = current_core_cycle[packet->cpu];
+    } else {
+        block[set][way].dirty = 0;
+        block[set][way].dirty_since_cycle = UINT64_MAX;
+    }
+
     block[set][way].prefetch = (packet->type == PREFETCH) ? 1 : 0;
     block[set][way].used = 0;
 
@@ -1775,6 +1823,13 @@ void CACHE::return_data(PACKET *packet)
     MSHR.entry[mshr_index].data = packet->data;
     MSHR.entry[mshr_index].pf_metadata = packet->pf_metadata;
 
+    if ((cache_type == IS_LLC) && (packet->llc_miss_cycle != UINT64_MAX) && (packet->llc_refill_complete_cycle != UINT64_MAX)) {
+        llc_total_miss_latency += (packet->llc_refill_complete_cycle - packet->llc_miss_cycle);
+        llc_refill_latency += (packet->llc_refill_complete_cycle - packet->llc_refill_start_cycle);
+        llc_refill_count++;
+        llc_miss_count++;
+    }
+
 
 if(all_warmup_complete<=NUM_CPUS)
 {
@@ -1888,6 +1943,8 @@ void CACHE::add_mshr(PACKET *packet)
     uint32_t index = 0;
 
     packet->cycle_enqueued = current_core_cycle[packet->cpu];
+    if (cache_type == IS_LLC)
+        packet->llc_miss_cycle = current_core_cycle[packet->cpu];
 
     // search mshr
     for (index=0; index<MSHR_SIZE; index++) {
