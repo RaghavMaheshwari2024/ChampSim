@@ -1,0 +1,10 @@
+# build artifacts
+*.o
+
+# IDE/editor files
+*.swp
+.vscode/
+
+# traces and results
+results_50M/
+dpc3_traces/
