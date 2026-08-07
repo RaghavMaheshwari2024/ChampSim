@@ -11,7 +11,8 @@ class BLOCK {
     uint8_t valid,
             prefetch,
             dirty,
-            used;
+            used,
+            early_write_back;
 
     int delta,
         depth,
@@ -35,6 +36,7 @@ class BLOCK {
         prefetch = 0;
         dirty = 0;
         used = 0;
+        early_write_back = 0;
 
         delta = 0;
         depth = 0;

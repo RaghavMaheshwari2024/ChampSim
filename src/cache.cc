@@ -263,6 +263,8 @@ void CACHE::handle_writeback()
             sim_access[writeback_cpu][WQ.entry[index].type]++;
 
             // mark dirty
+            if (cache_type == IS_LLC)
+                block[set][way].early_write_back = 0;
             block[set][way].dirty = 1;
            
 
@@ -519,6 +521,7 @@ void CACHE::handle_writeback()
                     fill_cache(set, way, &WQ.entry[index]);
 
                     // mark dirty
+                    block[set][way].early_write_back = 0;
                     block[set][way].dirty = 1; 
 
                     // check fill level
@@ -1116,11 +1119,75 @@ void CACHE::operate()
 {
     handle_fill();
     handle_writeback();
+    if (cache_type == IS_LLC)
+        retry_early_writebacks();
     reads_available_this_cycle = MAX_READ;
     handle_read();
 
     if (PQ.occupancy && (reads_available_this_cycle > 0))
         handle_prefetch();
+}
+
+bool CACHE::early_clean_llc(uint64_t full_addr)
+{
+    assert(cache_type == IS_LLC);
+
+    const uint64_t line_addr = full_addr >> LOG2_BLOCK_SIZE;
+    const uint32_t set = get_set(line_addr);
+    const uint32_t way = get_way(line_addr, set);
+
+    // There is no LLC line to clean.
+    if (way == NUM_WAY)
+        return true;
+
+    // A line that is already clean cannot need an early writeback.
+    if (!block[set][way].dirty) {
+        block[set][way].early_write_back = 0;
+        return true;
+    }
+
+    assert(lower_level != nullptr);
+
+    // Keep the request pending until the lower-level WQ has room.
+    if (lower_level->get_occupancy(2, line_addr) ==
+        lower_level->get_size(2, line_addr)) {
+        block[set][way].early_write_back = 1;
+        lower_level->increment_WQ_FULL(line_addr);
+        return false;
+    }
+
+    PACKET writeback_packet;
+    writeback_packet.fill_level = fill_level << 1;
+    writeback_packet.cpu = block[set][way].cpu;
+    writeback_packet.address = block[set][way].address;
+    writeback_packet.full_addr = block[set][way].full_addr;
+    writeback_packet.data = block[set][way].data;
+    writeback_packet.instr_id = block[set][way].instr_id;
+    writeback_packet.ip = 0;
+    writeback_packet.type = WRITEBACK;
+    writeback_packet.event_cycle = current_core_cycle[writeback_packet.cpu];
+
+    lower_level->add_wq(&writeback_packet);
+
+    // In the simplified design, queue insertion completes early cleaning.
+    block[set][way].early_write_back = 0;
+    block[set][way].dirty = 0;
+    return true;
+}
+
+void CACHE::retry_early_writebacks()
+{
+    assert(cache_type == IS_LLC);
+
+    for (uint32_t set = 0; set < NUM_SET; set++) {
+        for (uint32_t way = 0; way < NUM_WAY; way++) {
+            if (block[set][way].valid &&
+                block[set][way].early_write_back &&
+                block[set][way].dirty) {
+                early_clean_llc(block[set][way].full_addr);
+            }
+        }
+    }
 }
 
 uint32_t CACHE::get_set(uint64_t address)
@@ -1162,6 +1229,7 @@ void CACHE::fill_cache(uint32_t set, uint32_t way, PACKET *packet)
     if (block[set][way].valid == 0)
         block[set][way].valid = 1;
     block[set][way].dirty = 0;
+    block[set][way].early_write_back = 0;
     block[set][way].prefetch = (packet->type == PREFETCH) ? 1 : 0;
     block[set][way].used = 0;
 

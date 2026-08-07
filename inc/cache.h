@@ -220,6 +220,8 @@ class CACHE : public MEMORY {
          operate(),
          increment_WQ_FULL(uint64_t address);
 
+    bool early_clean_llc(uint64_t full_addr);
+
     uint32_t get_occupancy(uint8_t queue_type, uint64_t address),
              get_size(uint8_t queue_type, uint64_t address);
 
@@ -232,7 +234,8 @@ class CACHE : public MEMORY {
     void handle_fill(),
          handle_writeback(),
          handle_read(),
-         handle_prefetch();
+         handle_prefetch(),
+         retry_early_writebacks();
 
     void add_mshr(PACKET *packet),
          update_fill_cycle(),
