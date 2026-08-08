@@ -80,7 +80,8 @@ extern uint64_t GLOBAL_CYCLE;
 #define LLC_LATENCY 20  // 4/5 (L1I or L1D) + 10 + 20 = 34/35 cycles
 #define LLC_WRITE_LATENCY 100 //guru
 
-extern  uint32_t writes_set[LLC_SET][LLC_WAY];   //guru
+extern  uint32_t writes_set[LLC_SET][LLC_WAY];
+extern std::unordered_map<uint64_t, uint64_t> cpu_store_count;   // raghav
 
 class CACHE : public MEMORY {
   public:

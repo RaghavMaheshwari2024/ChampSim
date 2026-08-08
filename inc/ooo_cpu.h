@@ -28,6 +28,7 @@ using namespace std;
 #define STA_SIZE (ROB_SIZE*NUM_INSTR_DESTINATIONS_SPARC)
 
 extern uint32_t SCHEDULING_LATENCY, EXEC_LATENCY, DECODE_LATENCY;
+extern std::unordered_map<uint64_t, uint64_t> cpu_store_count;
 
 
 // cpu

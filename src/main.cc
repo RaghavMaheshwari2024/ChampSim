@@ -4,6 +4,7 @@
 #include "ooo_cpu.h"
 #include "uncore.h"
 #include <fstream>
+#include <unordered_map>
 
 uint8_t warmup_complete[NUM_CPUS], 
         simulation_complete[NUM_CPUS], 
@@ -20,7 +21,8 @@ uint64_t warmup_instructions     = 1000000,
 time_t start_time;
 
 uint64_t GLOBAL_CYCLE=0;
- uint32_t writes_set[LLC_SET][LLC_WAY];   //guru
+uint32_t writes_set[LLC_SET][LLC_WAY];
+std::unordered_map<uint64_t, uint64_t> cpu_store_count;   //guru
 // PAGE TABLE
 uint32_t PAGE_TABLE_LATENCY = 0, SWAP_LATENCY = 0;
 queue <uint64_t > page_queue;
@@ -1193,7 +1195,7 @@ int main(int argc, char** argv)
     uncore.LLC.llc_prefetcher_final_stats();
 
 #ifndef CRC2_COMPILE
-    // uncore.LLC.llc_replacement_final_stats();
+    uncore.LLC.llc_replacement_final_stats();
     print_dram_stats();
     print_branch_stats();
 #endif

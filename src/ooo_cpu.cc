@@ -1616,6 +1616,12 @@ void O3_CPU::operate_lsq()
 
 void O3_CPU::execute_store(uint32_t rob_index, uint32_t sq_index, uint32_t data_index)
 {
+    uint64_t line_addr =
+    SQ.entry[sq_index].physical_address &
+    ~((1ULL << LOG2_BLOCK_SIZE) - 1);
+
+    cpu_store_count[line_addr]++;
+
     SQ.entry[sq_index].fetched = COMPLETED;
     SQ.entry[sq_index].event_cycle = current_core_cycle[cpu];
 
