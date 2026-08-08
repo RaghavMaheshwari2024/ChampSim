@@ -189,6 +189,7 @@ void CACHE::handle_fill()
 
             fill_cache(set, way, &MSHR.entry[mshr_index]);
 
+
             // RFO marks cache line dirty
             if (cache_type == IS_L1D) {
                 if (MSHR.entry[mshr_index].type == RFO)
@@ -1225,12 +1226,13 @@ void CACHE::fill_cache(uint32_t set, uint32_t way, PACKET *packet)
     block[set][way].cpu = packet->cpu;
     block[set][way].instr_id = packet->instr_id;
 
-  if(cache_type==IS_LLC)
-  {
-    writes_set[set][way]++;  //guru  //This counter value increments on writes due to read/write miss and writeback miss
-  //  if(packet->type == WRITEBACK || packet->type == RFO)
-    // block[set][way].dirty = 1;
-  }
+
+    if(cache_type==IS_LLC)
+    {
+        writes_set[set][way]++;  //guru  //This counter value increments on writes due to read/write miss and writeback miss
+    //  if(packet->type == WRITEBACK || packet->type == RFO)
+        // block[set][way].dirty = 1;
+    }
     
 
     DP ( if (warmup_complete[packet->cpu]) {

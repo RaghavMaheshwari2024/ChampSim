@@ -40,6 +40,7 @@ void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
     // cout << "CPU: " << cpu << "  LLC " << setw(9) << TYPE_NAME << " set: " << setw(5) << set << " way: " << setw(2) << way;
     // cout << hex << " paddr: " << setw(12) << paddr << " ip: " << setw(8) << ip << " victim_addr: " << victim_addr << dec << endl;
 
+
     // baseline LRU
     if (hit && (type == WRITEBACK)) // writeback hit does not update LRU state
         return;
@@ -49,7 +50,8 @@ void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
 
 void CACHE::llc_replacement_final_stats()  //guru
 {
-        cout<<"The no. of writes in each cache line are: "<<endl;
+    /*
+    cout<<"The no. of writes in each cache line are: "<<endl;
     int wc=0;
     for(int i=0;i<LLC_WAY;i++)
      cout<<"\t"<<i;
@@ -67,6 +69,7 @@ void CACHE::llc_replacement_final_stats()  //guru
         wc=0;
         cout<<endl;
      }
+    */
 
     double averageWritesPerSet[LLC_SET];
     	for(int i=0;i<LLC_SET;i++){
@@ -110,5 +113,31 @@ void CACHE::llc_replacement_final_stats()  //guru
     	cout<<endl<<"-------------------------------------------------------------"<<endl;
     	cout<<"Coefficient of intra set write Variation is -->  "<<finalAns;
 
+        cout << "\n========== CPU STORE COUNT ==========\n";
+
+        uint64_t total_stores = 0;
+        uint64_t max_stores = 0;
+
+        for (const auto& entry : cpu_store_count)
+        {
+            cout << "Line 0x"
+                << hex << entry.first
+                << dec
+                << " : "
+                << entry.second
+                << " stores"
+                << endl;
+
+            total_stores += entry.second;
+
+            if (entry.second > max_stores)
+                max_stores = entry.second;
+        }
+
+        cout << "\nTotal unique cache lines stored to: "<< cpu_store_count.size()<< endl;
+
+        cout << "Total CPU store executions: "<< total_stores<< endl;
+
+        cout << "Maximum stores to one cache line: "<< max_stores<< endl;
 
 }
