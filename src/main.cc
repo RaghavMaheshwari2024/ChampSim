@@ -22,7 +22,8 @@ time_t start_time;
 
 uint64_t GLOBAL_CYCLE=0;
 uint32_t writes_set[LLC_SET][LLC_WAY];
-std::unordered_map<uint64_t, uint64_t> cpu_store_count;   //guru
+std::unordered_map<uint64_t, uint64_t> cpu_store_count;   //raghav
+std::unordered_set<uint64_t> llc_lines;
 // PAGE TABLE
 uint32_t PAGE_TABLE_LATENCY = 0, SWAP_LATENCY = 0;
 queue <uint64_t > page_queue;

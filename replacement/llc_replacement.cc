@@ -140,4 +140,36 @@ void CACHE::llc_replacement_final_stats()  //guru
 
         cout << "Maximum stores to one cache line: "<< max_stores<< endl;
 
-}
+        cout << "\n========== CPU STORES FOR LLC LINES ==========\n";
+
+        uint64_t llc_store_lines = 0;
+        uint64_t llc_store_total = 0;
+
+        for (const auto& entry : cpu_store_count)
+        {
+            uint64_t line_addr = entry.first;
+            uint64_t stores = entry.second;
+
+            // Check whether this CPU-store line ever reached LLC
+            if (llc_lines.find(line_addr) != llc_lines.end())
+            {
+                cout << "LLC Line 0x"
+                    << hex << line_addr
+                    << dec
+                    << " : "
+                    << stores
+                    << " stores"
+                    << endl;
+
+                llc_store_lines++;
+                llc_store_total += stores;
+            }
+        }
+
+        cout << "\nTotal unique CPU-store lines that reached LLC: "
+            << llc_store_lines << endl;
+
+        cout << "Total CPU stores to those LLC lines: "
+            << llc_store_total << endl;
+
+        }
