@@ -1308,6 +1308,12 @@ void CACHE::fill_cache(uint32_t set, uint32_t way, PACKET *packet)
 
     if(cache_type==IS_LLC)
     {
+        uint64_t line_addr =
+        packet->full_addr &
+        ~((1ULL << LOG2_BLOCK_SIZE) - 1);
+
+        llc_lines.insert(line_addr);
+
         writes_set[set][way]++;  //guru  //This counter value increments on writes due to read/write miss and writeback miss
     //  if(packet->type == WRITEBACK || packet->type == RFO)
         // block[set][way].dirty = 1;

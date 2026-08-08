@@ -82,6 +82,8 @@ extern uint64_t GLOBAL_CYCLE;
 
 extern  uint32_t writes_set[LLC_SET][LLC_WAY];
 extern std::unordered_map<uint64_t, uint64_t> cpu_store_count;   // raghav
+extern std::unordered_set<uint64_t> llc_lines;
+
 
 class CACHE : public MEMORY {
   public:
