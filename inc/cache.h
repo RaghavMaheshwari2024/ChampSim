@@ -112,6 +112,8 @@ class CACHE : public MEMORY {
     };
 
     std::vector<PortScheduleEntry> port_schedule_table;
+    // LLC lines waiting for space in the DRAM write queue.
+    std::unordered_set<uint64_t> early_writeback_pending;
 
     // prefetch stats
     uint64_t pf_requested,

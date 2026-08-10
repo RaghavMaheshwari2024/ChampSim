@@ -288,8 +288,10 @@ void CACHE::handle_writeback()
             sim_access[writeback_cpu][WQ.entry[index].type]++;
 
             // mark dirty
-            if (cache_type == IS_LLC)
+            if (cache_type == IS_LLC) {
                 block[set][way].early_write_back = 0;
+                early_writeback_pending.erase(block[set][way].address);
+            }
             if (cache_type == IS_LLC) {
                 if (block[set][way].dirty_since_cycle == UINT64_MAX)
                     block[set][way].dirty_since_cycle = current_core_cycle[writeback_cpu];
@@ -551,6 +553,7 @@ void CACHE::handle_writeback()
 
                     // mark dirty
                     block[set][way].early_write_back = 0;
+                    early_writeback_pending.erase(block[set][way].address);
                     block[set][way].dirty = 1; 
 
                     // check fill level
@@ -1176,11 +1179,15 @@ bool CACHE::early_clean_llc(uint64_t full_addr)
 
     // There is no LLC line to clean.
     if (way == NUM_WAY)
+    {
+        early_writeback_pending.erase(line_addr);
         return true;
+    }
 
     // A line that is already clean cannot need an early writeback.
     if (!block[set][way].dirty) {
         block[set][way].early_write_back = 0;
+        early_writeback_pending.erase(line_addr);
         return true;
     }
 
@@ -1190,6 +1197,7 @@ bool CACHE::early_clean_llc(uint64_t full_addr)
     if (lower_level->get_occupancy(2, line_addr) ==
         lower_level->get_size(2, line_addr)) {
         block[set][way].early_write_back = 1;
+        early_writeback_pending.insert(line_addr);
         lower_level->increment_WQ_FULL(line_addr);
         return false;
     }
@@ -1209,6 +1217,7 @@ bool CACHE::early_clean_llc(uint64_t full_addr)
 
     // In the simplified design, queue insertion completes early cleaning.
     block[set][way].early_write_back = 0;
+    early_writeback_pending.erase(line_addr);
     block[set][way].dirty = 0;
     return true;
 }
@@ -1217,14 +1226,11 @@ void CACHE::retry_early_writebacks()
 {
     assert(cache_type == IS_LLC);
 
-    for (uint32_t set = 0; set < NUM_SET; set++) {
-        for (uint32_t way = 0; way < NUM_WAY; way++) {
-            if (block[set][way].valid &&
-                block[set][way].early_write_back &&
-                block[set][way].dirty) {
-                early_clean_llc(block[set][way].full_addr);
-            }
-        }
+    // Retry only lines that previously observed a full DRAM WQ.  Scanning
+    // the entire LLC every cycle makes long simulations effectively stall.
+    const auto pending = early_writeback_pending;
+    for (uint64_t line_addr : pending) {
+        early_clean_llc(line_addr << LOG2_BLOCK_SIZE);
     }
 }
 
@@ -1268,6 +1274,7 @@ void CACHE::fill_cache(uint32_t set, uint32_t way, PACKET *packet)
         block[set][way].valid = 1;
 
     block[set][way].early_write_back = 0;
+    early_writeback_pending.erase(packet->address);
 
     if ((cache_type == IS_LLC) && (packet->type == WRITEBACK)) {
         block[set][way].dirty = 1;
