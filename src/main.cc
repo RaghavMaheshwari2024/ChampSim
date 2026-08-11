@@ -18,6 +18,8 @@ uint64_t warmup_instructions     = 1000000,
          simulation_instructions = 10000000,
          champsim_seed;
 
+const uint64_t EARLY_CLEAN_PROBE_PERIOD = 1000;
+
 time_t start_time;
 
 uint64_t GLOBAL_CYCLE=0;
@@ -730,6 +732,109 @@ void cpu_l1i_prefetcher_cache_fill(uint32_t cpu_num, uint64_t addr, uint32_t set
   ooo_cpu[cpu_num].l1i_prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr);
 }
 
+struct EarlyCleanProbeSelection {
+    uint32_t set;
+    uint32_t way;
+    uint64_t full_addr;
+    bool selected_from_dirty_pool;
+};
+
+bool pick_random_llc_line(CACHE &llc, EarlyCleanProbeSelection &selection)
+{
+    std::vector<EarlyCleanProbeSelection> all_candidates;
+    std::vector<EarlyCleanProbeSelection> dirty_candidates;
+
+    all_candidates.reserve(llc.NUM_SET * llc.NUM_WAY);
+    dirty_candidates.reserve(llc.NUM_SET * llc.NUM_WAY);
+
+    for (uint32_t set = 0; set < llc.NUM_SET; ++set) {
+        for (uint32_t way = 0; way < llc.NUM_WAY; ++way) {
+            if (!llc.block[set][way].valid)
+                continue;
+
+            EarlyCleanProbeSelection candidate{set, way, llc.block[set][way].full_addr, false};
+            all_candidates.push_back(candidate);
+
+            if (llc.block[set][way].dirty) {
+                candidate.selected_from_dirty_pool = true;
+                dirty_candidates.push_back(candidate);
+            }
+        }
+    }
+
+    const std::vector<EarlyCleanProbeSelection> *candidate_pool = &all_candidates;
+    if (!dirty_candidates.empty())
+        candidate_pool = &dirty_candidates;
+
+    if (candidate_pool->empty())
+        return false;
+
+    selection = (*candidate_pool)[champsim_rand.draw_rand() % candidate_pool->size()];
+    return true;
+}
+
+void log_early_clean_probe(std::ofstream &log_file, uint64_t cycle, const EarlyCleanProbeSelection &selection,
+                           uint32_t wq_before, uint32_t wq_after, uint32_t wq_size,
+                           uint8_t valid_before, uint8_t dirty_before, uint8_t early_before,
+                           uint8_t dirty_after, uint8_t early_after, bool accepted)
+{
+    log_file << "cycle=" << cycle
+             << " pool=" << (selection.selected_from_dirty_pool ? "dirty" : "all")
+             << " full_addr=0x" << std::hex << selection.full_addr << std::dec
+             << " line_addr=0x" << std::hex << (selection.full_addr >> LOG2_BLOCK_SIZE) << std::dec
+             << " set=" << selection.set
+             << " way=" << selection.way
+             << " valid_before=" << +valid_before
+             << " dirty_before=" << +dirty_before
+             << " early_before=" << +early_before
+             << " wq_before=" << wq_before << '/' << wq_size
+             << " accepted=" << +accepted
+             << " dirty_after=" << +dirty_after
+             << " early_after=" << +early_after
+             << " wq_after=" << wq_after << '/' << wq_size
+             << '\n';
+}
+
+void run_early_clean_probe(std::ofstream &log_file)
+{
+    if ((GLOBAL_CYCLE % EARLY_CLEAN_PROBE_PERIOD) != 0)
+        return;
+
+    if (all_warmup_complete <= NUM_CPUS)
+        return;
+
+    if (uncore.LLC.lower_level == nullptr) {
+        log_file << "cycle=" << GLOBAL_CYCLE << " status=no-lower-level\n";
+        return;
+    }
+
+    EarlyCleanProbeSelection selection{};
+    if (!pick_random_llc_line(uncore.LLC, selection)) {
+        log_file << "cycle=" << GLOBAL_CYCLE << " status=no-live-llc-lines\n";
+        return;
+    }
+
+    BLOCK &line = uncore.LLC.block[selection.set][selection.way];
+    const uint8_t valid_before = line.valid;
+    const uint8_t dirty_before = line.dirty;
+    const uint8_t early_before = line.early_write_back;
+    const uint32_t wq_before = uncore.LLC.lower_level->get_occupancy(2, selection.full_addr);
+    const uint32_t wq_size = uncore.LLC.lower_level->get_size(2, selection.full_addr);
+
+    const bool accepted = uncore.LLC.early_clean_llc(selection.full_addr);
+
+    const uint8_t dirty_after = line.dirty;
+    const uint8_t early_after = line.early_write_back;
+    const uint32_t wq_after = uncore.LLC.lower_level->get_occupancy(2, selection.full_addr);
+
+    log_early_clean_probe(log_file, GLOBAL_CYCLE, selection,
+                          wq_before, wq_after, wq_size,
+                          valid_before, dirty_before, early_before,
+                          dirty_after, early_after, accepted);
+
+    log_file.flush();
+}
+
 int main(int argc, char** argv)
 {
 	// interrupt signal hanlder
@@ -922,6 +1027,14 @@ int main(int argc, char** argv)
     // TODO: can we initialize these variables from the class constructor?
     srand(seed_number);
     champsim_seed = seed_number;
+
+    std::ofstream early_clean_probe_log("results_50M/early_clean_debug.log");
+    if (!early_clean_probe_log.is_open()) {
+        std::cerr << "Unable to open results_50M/early_clean_debug.log" << std::endl;
+        assert(0);
+    }
+    early_clean_probe_log << "# cycle pool full_addr line_addr set way valid_before dirty_before early_before wq_before accepted dirty_after early_after wq_after\n";
+
     for (int i=0; i<NUM_CPUS; i++) {
 
         ooo_cpu[i].cpu = i; 
@@ -1147,6 +1260,7 @@ int main(int argc, char** argv)
         // TODO: should it be backward?
         uncore.DRAM.operate();
         uncore.LLC.operate();
+        run_early_clean_probe(early_clean_probe_log);
     }
 
     uint64_t elapsed_second = (uint64_t)(time(NULL) - start_time),

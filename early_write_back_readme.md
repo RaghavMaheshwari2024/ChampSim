@@ -10,6 +10,134 @@ The line stays in the LLC. The operation only changes whether the line is
 considered dirty and whether an early writeback is waiting for space in the
 DRAM write queue.
 
+## 11. Debug probe added in `src/main.cc`
+
+The simulator now includes a small validation harness that periodically selects
+an LLC line at random and calls `early_clean_llc()` on it. This does not
+change the early-writeback policy itself. It only adds instrumentation so the
+implementation can be exercised and inspected while the simulator runs.
+
+### What was added
+
+#### Periodic probe trigger
+
+The main simulation loop now calls a probe helper after `uncore.LLC.operate()`.
+The probe runs every 1000 global cycles.
+
+Why this was done:
+
+- The probe needs to run often enough to exercise the code path repeatedly.
+- It also needs to stay throttled so the extra logging does not dominate the
+    simulation output or add unnecessary overhead.
+- Running it from the main loop keeps the test close to the existing LLC
+    timing model, so the probe observes the same cache state that normal traffic
+    sees.
+
+#### Live LLC line selection
+
+The probe scans the current LLC contents in `uncore.LLC.block[set][way]` and
+builds a candidate list from valid resident lines. It prefers dirty lines when
+they exist, because dirty lines are the only ones that can meaningfully test
+the early-clean behavior.
+
+Why this was done:
+
+- The existing `llc_lines` set is insert-only in the current codebase, so it is
+    not a reliable source of live LLC residency.
+- Scanning the real cache array avoids stale addresses, replaced lines, and
+    invalid entries.
+- Preferring dirty lines makes the probe more useful because it naturally
+    drives the success path or the WQ-full retry path.
+
+#### Dedicated debug log file
+
+The probe writes records to `results_50M/early_clean_debug.log` instead of
+stdout.
+
+Why this was done:
+
+- A separate file keeps the validation output easy to inspect after a run.
+- It avoids mixing the new probe messages with the simulator’s normal console
+    output.
+- The file can be diffed or grepped across runs when comparing behavior.
+
+#### Per-probe state logging
+
+Each log entry records:
+
+- the current cycle;
+- the selected LLC address and line address;
+- the set and way;
+- the valid, dirty, and `early_write_back` state before the call;
+- the lower-level WQ occupancy before and after the call;
+- the return value from `early_clean_llc()`;
+- the dirty and `early_write_back` state after the call.
+
+Why this was done:
+
+- The before/after state makes it easy to confirm whether the function actually
+    cleaned the line.
+- The WQ occupancy tells you whether a rejection happened because the write
+    queue was full.
+- Recording the selected set and way lets you correlate the probe with the
+    cache contents if you need to inspect a specific resident line.
+- Logging the return value gives a direct check on whether the function
+    accepted the writeback or deferred it.
+
+#### Early-clean call path stays unchanged
+
+The implementation in `src/cache.cc` was not rewritten for this validation
+work. The probe calls the existing `early_clean_llc()` entry point directly.
+
+Why this was done:
+
+- The goal is to validate the current implementation, not replace it.
+- Reusing the existing function exercises the same logic the simulator would
+    use in a real policy decision.
+- Keeping the policy code unchanged reduces the risk of introducing a second
+    behavior while debugging the first one.
+
+### Current probe flow
+
+```text
+Global cycle reaches probe interval
+                |
+                v
+Scan live LLC lines
+                |
+                v
+Choose a random valid line, preferring dirty lines when available
+                |
+                v
+Log pre-call state and WQ occupancy
+                |
+                v
+Call uncore.LLC.early_clean_llc(full_addr)
+                |
+                v
+Log return value and post-call state
+```
+
+### How to use the probe output
+
+If `early_clean_llc()` works as expected, the log should show one of these
+patterns:
+
+- dirty line with WQ space: the line becomes clean and `accepted=1`;
+- dirty line with WQ full: `early_write_back` stays set and `accepted=0`;
+- already-clean line: `accepted=1` with no dirty-bit change;
+- absent line: the probe skips it by construction because it only samples
+    valid residents.
+
+This means the probe is primarily a functional sanity check, not a policy
+benchmark. Its purpose is to prove that the existing early-clean logic is being
+hit, that it makes the expected state transitions, and that the retry behavior
+is observable when the write queue is full.
+
+## 12. Validation
+
+The implementation should be checked with:
+
 This version intentionally uses a simple address-based design:
 
 - there is no request ID;
