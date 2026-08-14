@@ -478,3 +478,133 @@ The most important behavioral checks are:
 4. A pending line retries after WQ space becomes available.
 5. A newer LLC write cancels the pending bit and keeps the line dirty.
 6. Normal eviction still stalls when its lower-level WQ is full.
+
+## 12. Statistics and observability corrections
+
+The random probe and the LLC statistics measure different kinds of events.
+An early-clean request is a background writeback to DRAM; it is not a normal
+LLC load, RFO, prefetch, or cache miss. Therefore, early cleaning must not be
+added to the ordinary LLC hit/miss counters. Separate counters are used for
+early-clean activity.
+
+### 12.1 Correct LLC eviction classification
+
+Earlier accounting placed the clean-victim test inside `if (victim.dirty)`.
+That made the clean branch unreachable. Consequently, `TOTAL_EVICTIONS` was
+always equal to `DIRTY_EVICTIONS`, and `CLEAN_EVICTIONS` stayed zero even when
+clean lines were replaced.
+
+The correction is implemented through `record_llc_eviction()` in
+`src/cache.cc`. It runs only after a replacement can actually proceed and
+classifies every valid LLC victim:
+
+```text
+valid victim -> TOTAL_EVICTIONS++
+dirty victim -> DIRTY_EVICTIONS++ and TOTAL_DIRTY_WRITEBACKS++
+clean victim -> CLEAN_EVICTIONS++
+```
+
+The helper is called from both replacement paths:
+
+1. A normal LLC fill caused by a demand/refill miss.
+2. An LLC writeback miss that selects a victim.
+
+If the lower-level DRAM WQ is full, the replacement is stalled and the victim
+is not counted yet. This prevents a blocked replacement from being reported as
+an eviction that never happened.
+
+### 12.2 Meaning of dirty-writeback counters
+
+`TOTAL_DIRTY_WRITEBACKS` counts dirty victims written out because of normal
+LLC replacement. It does not include early-clean requests. Early-clean traffic
+has its own counters, so the two mechanisms can be compared without mixing
+them.
+
+DRAM completion timing is now recorded separately for every LLC writeback
+packet that carries a writeback start cycle. The packet receives its start
+cycle when it is generated, and the DRAM controller reports completion when
+the WQ request finishes. `AVERAGE_DIRTY_WRITEBACK_LATENCY` is therefore the
+time from writeback generation until DRAM completion; it is not merely the
+time until the packet is accepted by the WQ.
+
+The existing dirty-line lifetime accounting is also completed when an early
+clean succeeds. The line was dirty until the early-clean request was accepted,
+so its lifetime ends at that point rather than waiting for a later eviction.
+
+### 12.3 Early-clean counters
+
+The LLC now reports these values:
+
+- `EARLY_CLEAN_ATTEMPTS`: calls to `early_clean_llc()`, including retries.
+- `EARLY_CLEAN_DIRTY_SELECTED`: random probes that selected a dirty line.
+- `EARLY_CLEAN_CLEAN_SELECTED`: random probes that selected a clean line.
+- `EARLY_CLEAN_NO_LINE`: calls whose address no longer mapped to a valid line.
+- `EARLY_CLEAN_CLEAN_NOOPS`: clean-line requests that correctly did nothing.
+- `EARLY_CLEAN_QUEUED_OR_MERGED`: dirty requests accepted by the DRAM WQ.
+- `EARLY_CLEAN_DEFERRED_WQ_FULL`: dirty requests delayed because the WQ was full.
+
+`QUEUED_OR_MERGED` uses this name because the DRAM controller may merge a
+duplicate writeback instead of increasing occupancy. Both cases mean that the
+request was accepted and the LLC line can be marked clean under the current
+queue-acceptance model.
+
+### 12.4 Probe log result field
+
+The probe log keeps the old `accepted` field for compatibility and adds a
+clear `result` field:
+
+```text
+result=queued_or_merged
+result=deferred_wq_full
+result=clean_noop
+```
+
+`accepted=1` alone does not mean that a writeback was sent. For a clean line,
+`accepted=1` means that the request was a successful no-op. The `result` field
+removes that ambiguity.
+
+The log records WQ occupancy before and after the request, the dirty and
+early-writeback bits before and after the request, and the selected set/way.
+This makes it possible to verify every state transition directly.
+
+### 12.5 Log location
+
+The probe log is written below the simulation-size directory, for example:
+
+```text
+results_1M/early_clean_debug.log
+results_50M/early_clean_debug.log
+```
+
+The path is derived from `simulation_instructions`, instead of always using
+`results_50M`. This prevents runs with different simulation lengths from
+sharing or overwriting the wrong log.
+
+### 12.6 Interpreting a zero pending-bit count
+
+`early_write_back` becomes `1` only when a dirty line is selected while the
+DRAM WQ is full. A run with `WQ FULL: 0` should therefore show:
+
+```text
+EARLY CLEAN DEFERRED WQ FULL: 0
+```
+
+and no probe records with `early_after=1`. This is expected, not evidence that
+the early-clean call is inactive.
+
+### 12.7 Validation checklist
+
+For a meaningful validation run, check all of the following:
+
+1. `CLEAN_EVICTIONS + DIRTY_EVICTIONS == TOTAL_EVICTIONS`.
+2. `EARLY_CLEAN_DIRTY_SELECTED` matches the number of dirty probe records.
+3. `EARLY_CLEAN_CLEAN_NOOPS` matches clean probe records.
+4. `EARLY_CLEAN_DEFERRED_WQ_FULL` is nonzero before expecting
+   `early_after=1`.
+5. `result=queued_or_merged` records change `dirty_before=1` to
+   `dirty_after=0`.
+6. `result=clean_noop` records keep both dirty values at zero and do not
+   increase WQ occupancy.
+7. `AVERAGE_DIRTY_WRITEBACK_LATENCY` is populated only when a writeback reaches
+   DRAM completion; a dash or zero means that no measured writeback completed
+   in the selected statistics interval.

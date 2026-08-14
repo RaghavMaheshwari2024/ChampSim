@@ -114,21 +114,6 @@ void CACHE::handle_fill()
                     if (cache_type == IS_LLC)
                         writeback_packet.llc_writeback_begin_cycle = current_core_cycle[fill_cpu];
 
-                    if ((cache_type == IS_LLC) && block[set][way].valid) {
-                        llc_total_evictions++;
-                        if (block[set][way].dirty) {
-                            llc_dirty_evictions++;
-                            llc_total_dirty_writebacks++;
-                            if (block[set][way].dirty_since_cycle != UINT64_MAX) {
-                                llc_dirty_line_lifetime_sum += (current_core_cycle[fill_cpu] - block[set][way].dirty_since_cycle);
-                                llc_dirty_line_lifetime_count++;
-                                block[set][way].dirty_since_cycle = UINT64_MAX;
-                            }
-                        } else {
-                            llc_clean_evictions++;
-                        }
-                    }
-
                     writeback_packet.fill_level = fill_level << 1;
                     writeback_packet.cpu = fill_cpu;
                     writeback_packet.address = block[set][way].address;
@@ -153,6 +138,9 @@ void CACHE::handle_fill()
         }
 
         if (do_fill){
+            if (cache_type == IS_LLC)
+                record_llc_eviction(set, way, current_core_cycle[fill_cpu]);
+
             // update prefetcher
 	  if (cache_type == IS_L1I)
 	    l1i_prefetcher_cache_fill(fill_cpu, ((MSHR.entry[mshr_index].ip)>>LOG2_BLOCK_SIZE)<<LOG2_BLOCK_SIZE, set, way, (MSHR.entry[mshr_index].type == PREFETCH) ? 1 : 0, ((block[set][way].ip)>>LOG2_BLOCK_SIZE)<<LOG2_BLOCK_SIZE);
@@ -498,6 +486,9 @@ void CACHE::handle_writeback()
                         else { 
                             PACKET writeback_packet;
 
+                            if (cache_type == IS_LLC)
+                                writeback_packet.llc_writeback_begin_cycle = current_core_cycle[writeback_cpu];
+
                             writeback_packet.fill_level = fill_level << 1;
                             writeback_packet.cpu = writeback_cpu;
                             writeback_packet.address = block[set][way].address;
@@ -521,6 +512,9 @@ void CACHE::handle_writeback()
                 }
 
                 if (do_fill) {
+                    if (cache_type == IS_LLC)
+                        record_llc_eviction(set, way, current_core_cycle[writeback_cpu]);
+
                     // update prefetcher
 		  if (cache_type == IS_L1I)
 		    l1i_prefetcher_cache_fill(writeback_cpu, ((WQ.entry[index].ip)>>LOG2_BLOCK_SIZE)<<LOG2_BLOCK_SIZE, set, way, 0, ((block[set][way].ip)>>LOG2_BLOCK_SIZE)<<LOG2_BLOCK_SIZE);
@@ -1174,6 +1168,8 @@ bool CACHE::early_clean_llc(uint64_t full_addr)
 {
     assert(cache_type == IS_LLC);
 
+    llc_early_clean_attempts++;
+
     const uint64_t line_addr = full_addr >> LOG2_BLOCK_SIZE;
     const uint32_t set = get_set(line_addr);
     const uint32_t way = get_way(line_addr, set);
@@ -1181,12 +1177,14 @@ bool CACHE::early_clean_llc(uint64_t full_addr)
     // There is no LLC line to clean.
     if (way == NUM_WAY)
     {
+        llc_early_clean_no_line++;
         early_writeback_pending.erase(line_addr);
         return true;
     }
 
     // A line that is already clean cannot need an early writeback.
     if (!block[set][way].dirty) {
+        llc_early_clean_clean_noop++;
         block[set][way].early_write_back = 0;
         early_writeback_pending.erase(line_addr);
         return true;
@@ -1197,6 +1195,7 @@ bool CACHE::early_clean_llc(uint64_t full_addr)
     // Keep the request pending until the lower-level WQ has room.
     if (lower_level->get_occupancy(2, line_addr) ==
         lower_level->get_size(2, line_addr)) {
+        llc_early_clean_deferred++;
         block[set][way].early_write_back = 1;
         early_writeback_pending.insert(line_addr);
         lower_level->increment_WQ_FULL(line_addr);
@@ -1213,14 +1212,53 @@ bool CACHE::early_clean_llc(uint64_t full_addr)
     writeback_packet.ip = 0;
     writeback_packet.type = WRITEBACK;
     writeback_packet.event_cycle = current_core_cycle[writeback_packet.cpu];
+    writeback_packet.llc_writeback_begin_cycle = current_core_cycle[writeback_packet.cpu];
 
     lower_level->add_wq(&writeback_packet);
+    llc_early_clean_queued++;
+
+    if (block[set][way].dirty_since_cycle != UINT64_MAX) {
+        llc_dirty_line_lifetime_sum +=
+            current_core_cycle[writeback_packet.cpu] - block[set][way].dirty_since_cycle;
+        llc_dirty_line_lifetime_count++;
+        block[set][way].dirty_since_cycle = UINT64_MAX;
+    }
 
     // In the simplified design, queue insertion completes early cleaning.
     block[set][way].early_write_back = 0;
     early_writeback_pending.erase(line_addr);
     block[set][way].dirty = 0;
     return true;
+}
+
+void CACHE::record_llc_eviction(uint32_t set, uint32_t way, uint64_t cycle)
+{
+    if ((cache_type != IS_LLC) || !block[set][way].valid)
+        return;
+
+    llc_total_evictions++;
+    if (block[set][way].dirty) {
+        llc_dirty_evictions++;
+        llc_total_dirty_writebacks++;
+        if (block[set][way].dirty_since_cycle != UINT64_MAX) {
+            llc_dirty_line_lifetime_sum +=
+                cycle - block[set][way].dirty_since_cycle;
+            llc_dirty_line_lifetime_count++;
+            block[set][way].dirty_since_cycle = UINT64_MAX;
+        }
+    } else {
+        llc_clean_evictions++;
+    }
+}
+
+void CACHE::record_llc_writeback_complete(uint64_t begin_cycle,
+                                           uint64_t complete_cycle)
+{
+    if ((cache_type == IS_LLC) && (begin_cycle != UINT64_MAX) &&
+        (complete_cycle >= begin_cycle)) {
+        llc_writeback_count++;
+        llc_writeback_latency += complete_cycle - begin_cycle;
+    }
 }
 
 void CACHE::retry_early_writebacks()

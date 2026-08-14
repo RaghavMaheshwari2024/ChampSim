@@ -118,6 +118,13 @@ if(cache->NAME=="L2C")
         cout << cache->NAME << " MEMORY STALL CYCLES: " << cache->llc_memory_stall_cycles << endl;
         cout << cache->NAME << " AVERAGE WQ OCCUPANCY: " << (cache->llc_wq_occupancy_samples ? (1.0 * cache->llc_wq_occupancy_sum) / cache->llc_wq_occupancy_samples : 0.0) << " cycles" << endl;
         cout << cache->NAME << " AVERAGE DIRTY LINE LIFETIME: " << (cache->llc_dirty_line_lifetime_count ? (1.0 * cache->llc_dirty_line_lifetime_sum) / cache->llc_dirty_line_lifetime_count : 0.0) << " cycles" << endl;
+        cout << cache->NAME << " EARLY CLEAN ATTEMPTS: " << cache->llc_early_clean_attempts << endl;
+        cout << cache->NAME << " EARLY CLEAN DIRTY SELECTED: " << cache->llc_early_clean_dirty_selected << endl;
+        cout << cache->NAME << " EARLY CLEAN CLEAN SELECTED: " << cache->llc_early_clean_clean_selected << endl;
+        cout << cache->NAME << " EARLY CLEAN NO LINE: " << cache->llc_early_clean_no_line << endl;
+        cout << cache->NAME << " EARLY CLEAN CLEAN NO-OPS: " << cache->llc_early_clean_clean_noop << endl;
+        cout << cache->NAME << " EARLY CLEAN QUEUED OR MERGED: " << cache->llc_early_clean_queued << endl;
+        cout << cache->NAME << " EARLY CLEAN DEFERRED WQ FULL: " << cache->llc_early_clean_deferred << endl;
     }
 
     cout << cache->NAME;
@@ -286,7 +293,7 @@ void write_stats_file()
                 stats << cache->NAME << ".AVERAGE_DIRTY_WRITEBACK_LATENCY=" << (cache->llc_writeback_count ? (1.0 * cache->llc_writeback_latency) / cache->llc_writeback_count : 0.0) << endl;
                 stats << cache->NAME << ".AVERAGE_REPLACEMENT_LATENCY=" << (cache->llc_miss_count ? (1.0 * cache->llc_replacement_latency) / cache->llc_miss_count : 0.0) << endl;
                 stats << cache->NAME << ".AVERAGE_INVALIDATION_LATENCY=" << (cache->llc_miss_count ? (1.0 * cache->llc_invalidation_latency) / cache->llc_miss_count : 0.0) << endl;
-                stats << cache->NAME << ".AVERAGE_EVICTION_LATENCY=" << (cache->llc_miss_count ? (1.0 * cache->llc_eviction_latency) / cache->llc_miss_count : 0.0) << endl;
+                stats << cache->NAME << ".AVERAGE_EVICTION_LATENCY=" << (cache->llc_total_evictions ? (1.0 * cache->llc_eviction_latency) / cache->llc_total_evictions : 0.0) << endl;
                 stats << cache->NAME << ".TOTAL_EVICTIONS=" << cache->llc_total_evictions << endl;
                 stats << cache->NAME << ".DIRTY_EVICTIONS=" << cache->llc_dirty_evictions << endl;
                 stats << cache->NAME << ".CLEAN_EVICTIONS=" << cache->llc_clean_evictions << endl;
@@ -294,6 +301,13 @@ void write_stats_file()
                 stats << cache->NAME << ".TOTAL_DIRTY_WRITEBACKS=" << cache->llc_total_dirty_writebacks << endl;
                 stats << cache->NAME << ".AVERAGE_WQ_OCCUPANCY=" << (cache->llc_wq_occupancy_samples ? (1.0 * cache->llc_wq_occupancy_sum) / cache->llc_wq_occupancy_samples : 0.0) << endl;
                 stats << cache->NAME << ".AVERAGE_DIRTY_LINE_LIFETIME=" << (cache->llc_dirty_line_lifetime_count ? (1.0 * cache->llc_dirty_line_lifetime_sum) / cache->llc_dirty_line_lifetime_count : 0.0) << endl;
+                stats << cache->NAME << ".EARLY_CLEAN_ATTEMPTS=" << cache->llc_early_clean_attempts << endl;
+                stats << cache->NAME << ".EARLY_CLEAN_DIRTY_SELECTED=" << cache->llc_early_clean_dirty_selected << endl;
+                stats << cache->NAME << ".EARLY_CLEAN_CLEAN_SELECTED=" << cache->llc_early_clean_clean_selected << endl;
+                stats << cache->NAME << ".EARLY_CLEAN_NO_LINE=" << cache->llc_early_clean_no_line << endl;
+                stats << cache->NAME << ".EARLY_CLEAN_CLEAN_NOOPS=" << cache->llc_early_clean_clean_noop << endl;
+                stats << cache->NAME << ".EARLY_CLEAN_QUEUED_OR_MERGED=" << cache->llc_early_clean_queued << endl;
+                stats << cache->NAME << ".EARLY_CLEAN_DEFERRED_WQ_FULL=" << cache->llc_early_clean_deferred << endl;
                 stats << cache->NAME << ".MEMORY_STALL_CYCLES=" << cache->llc_memory_stall_cycles << endl;
                 stats << cache->NAME << ".DEADBLOCK_EVICTIONS=" << cache->deadblock << endl;
                 stats << cache->NAME << ".BYPASSED_WRITES=" << cache->bypassed_writes << endl;
@@ -776,7 +790,8 @@ bool pick_random_llc_line(CACHE &llc, EarlyCleanProbeSelection &selection)
 void log_early_clean_probe(std::ofstream &log_file, uint64_t cycle, const EarlyCleanProbeSelection &selection,
                            uint32_t wq_before, uint32_t wq_after, uint32_t wq_size,
                            uint8_t valid_before, uint8_t dirty_before, uint8_t early_before,
-                           uint8_t dirty_after, uint8_t early_after, bool accepted)
+                           uint8_t dirty_after, uint8_t early_after, bool accepted,
+                           const char *result)
 {
     log_file << "cycle=" << cycle
              << " pool=" << (selection.selected_from_dirty_pool ? "dirty" : "all")
@@ -789,6 +804,7 @@ void log_early_clean_probe(std::ofstream &log_file, uint64_t cycle, const EarlyC
              << " early_before=" << +early_before
              << " wq_before=" << wq_before << '/' << wq_size
              << " accepted=" << +accepted
+             << " result=" << result
              << " dirty_after=" << +dirty_after
              << " early_after=" << +early_after
              << " wq_after=" << wq_after << '/' << wq_size
@@ -818,6 +834,10 @@ void run_early_clean_probe(std::ofstream &log_file)
     const uint8_t valid_before = line.valid;
     const uint8_t dirty_before = line.dirty;
     const uint8_t early_before = line.early_write_back;
+    if (line.dirty)
+        uncore.LLC.llc_early_clean_dirty_selected++;
+    else
+        uncore.LLC.llc_early_clean_clean_selected++;
     const uint32_t wq_before = uncore.LLC.lower_level->get_occupancy(2, selection.full_addr);
     const uint32_t wq_size = uncore.LLC.lower_level->get_size(2, selection.full_addr);
 
@@ -826,11 +846,14 @@ void run_early_clean_probe(std::ofstream &log_file)
     const uint8_t dirty_after = line.dirty;
     const uint8_t early_after = line.early_write_back;
     const uint32_t wq_after = uncore.LLC.lower_level->get_occupancy(2, selection.full_addr);
+    const char *result = dirty_before
+        ? (accepted ? "queued_or_merged" : "deferred_wq_full")
+        : "clean_noop";
 
     log_early_clean_probe(log_file, GLOBAL_CYCLE, selection,
                           wq_before, wq_after, wq_size,
                           valid_before, dirty_before, early_before,
-                          dirty_after, early_after, accepted);
+                          dirty_after, early_after, accepted, result);
 
     log_file.flush();
 }
@@ -1028,12 +1051,15 @@ int main(int argc, char** argv)
     srand(seed_number);
     champsim_seed = seed_number;
 
-    std::ofstream early_clean_probe_log("results_50M/early_clean_debug.log");
+    const std::string early_clean_log_path =
+        "results_" + std::to_string(simulation_instructions / 1000000) +
+        "M/early_clean_debug.log";
+    std::ofstream early_clean_probe_log(early_clean_log_path);
     if (!early_clean_probe_log.is_open()) {
-        std::cerr << "Unable to open results_50M/early_clean_debug.log" << std::endl;
+        std::cerr << "Unable to open " << early_clean_log_path << std::endl;
         assert(0);
     }
-    early_clean_probe_log << "# cycle pool full_addr line_addr set way valid_before dirty_before early_before wq_before accepted dirty_after early_after wq_after\n";
+    early_clean_probe_log << "# cycle pool full_addr line_addr set way valid_before dirty_before early_before wq_before accepted result dirty_after early_after wq_after\n";
 
     for (int i=0; i<NUM_CPUS; i++) {
 

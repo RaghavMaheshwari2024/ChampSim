@@ -158,6 +158,13 @@ class CACHE : public MEMORY {
     uint64_t llc_wq_occupancy_samples;
     uint64_t llc_dirty_line_lifetime_sum;
     uint64_t llc_dirty_line_lifetime_count;
+    uint64_t llc_early_clean_attempts;
+    uint64_t llc_early_clean_dirty_selected;
+    uint64_t llc_early_clean_clean_selected;
+    uint64_t llc_early_clean_no_line;
+    uint64_t llc_early_clean_clean_noop;
+    uint64_t llc_early_clean_queued;
+    uint64_t llc_early_clean_deferred;
     
     // constructor
     CACHE(string v1, uint32_t v2, int v3, uint32_t v4, uint32_t v5, uint32_t v6, uint32_t v7, uint32_t v8) 
@@ -239,6 +246,13 @@ class CACHE : public MEMORY {
         llc_wq_occupancy_samples = 0;
         llc_dirty_line_lifetime_sum = 0;
         llc_dirty_line_lifetime_count = 0;
+        llc_early_clean_attempts = 0;
+        llc_early_clean_dirty_selected = 0;
+        llc_early_clean_clean_selected = 0;
+        llc_early_clean_no_line = 0;
+        llc_early_clean_clean_noop = 0;
+        llc_early_clean_queued = 0;
+        llc_early_clean_deferred = 0;
     };
 
 
@@ -260,6 +274,7 @@ class CACHE : public MEMORY {
 
     void return_data(PACKET *packet),
          operate(),
+         record_llc_writeback_complete(uint64_t begin_cycle, uint64_t complete_cycle),
          increment_WQ_FULL(uint64_t address);
 
     bool early_clean_llc(uint64_t full_addr);
@@ -281,6 +296,7 @@ class CACHE : public MEMORY {
 
     void add_mshr(PACKET *packet),
          update_fill_cycle(),
+         record_llc_eviction(uint32_t set, uint32_t way, uint64_t cycle),
          llc_initialize_replacement(),
          update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit),
          llc_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit),

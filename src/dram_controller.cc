@@ -309,6 +309,11 @@ void MEMORY_CONTROLLER::process(PACKET_QUEUE *queue)
                 // update data bus cycle time
                 dbus_cycle_available[op_channel] = current_core_cycle[op_cpu] + DRAM_DBUS_RETURN_TIME;
 
+                if (queue->entry[request_index].llc_writeback_begin_cycle != UINT64_MAX)
+                    upper_level_dcache[op_cpu]->record_llc_writeback_complete(
+                        queue->entry[request_index].llc_writeback_begin_cycle,
+                        current_core_cycle[op_cpu]);
+
                 if (bank_request[op_channel][op_rank][op_bank].row_buffer_hit)
                     queue->ROW_BUFFER_HIT++;
                 else
