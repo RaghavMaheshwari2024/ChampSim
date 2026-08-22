@@ -30,3 +30,6 @@ compile_commands.json
 
 .vscode/
 **/.DS_Store
+
+dpc3_traces
+
