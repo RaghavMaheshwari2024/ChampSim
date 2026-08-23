@@ -35,6 +35,9 @@
 CACHE::CACHE(CACHE&& other)
     : operable(other),
 
+      early_clean_set_access_counter(std::move(other.early_clean_set_access_counter)),
+      last_early_clean_feature_snapshot(std::move(other.last_early_clean_feature_snapshot)),
+
       upper_levels(std::move(other.upper_levels)), lower_level(std::move(other.lower_level)), lower_translate(std::move(other.lower_translate)),
 
       cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY), MSHR_SIZE(other.MSHR_SIZE), PQ_SIZE(other.PQ_SIZE),
@@ -85,6 +88,8 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
 
   this->pref_module_pimpl = std::move(other.pref_module_pimpl);
   this->repl_module_pimpl = std::move(other.repl_module_pimpl);
+  this->early_clean_set_access_counter = std::move(other.early_clean_set_access_counter);
+  this->last_early_clean_feature_snapshot = std::move(other.last_early_clean_feature_snapshot);
 
   pref_module_pimpl->bind(this);
   repl_module_pimpl->bind(this);
@@ -100,7 +105,8 @@ CACHE::tag_lookup_type::tag_lookup_type(const request_type& req, bool local_pref
 
 CACHE::fill_type::fill_type(const tag_lookup_type& req, champsim::chrono::clock::time_point _time_enqueued)
     : address(req.address), v_address(req.v_address), ip(req.ip), instr_id(req.instr_id), cpu(req.cpu), type(req.type),
-      prefetch_from_this(req.prefetch_from_this), time_enqueued(_time_enqueued), instr_depend_on_me(req.instr_depend_on_me), to_return(req.to_return)
+      prefetch_from_this(req.prefetch_from_this), early_clean_set_access_count(req.early_clean_set_access_count), time_enqueued(_time_enqueued),
+      instr_depend_on_me(req.instr_depend_on_me), to_return(req.to_return)
 {
 }
 
@@ -180,10 +186,15 @@ bool CACHE::handle_fill(const fill_type& fill)
   assert(way <= set_end);
   assert(way != set_end || fill.type != access_type::WRITE); // Writes may not bypass
   const auto way_idx = std::distance(set_begin, way);        // cast protected by earlier assertion
+  const auto set_idx = get_set_index(fill.address);
+
+  if (early_clean_applies() && way != set_end && way->valid) {
+    last_early_clean_feature_snapshot = make_early_clean_feature_snapshot(*way, set_idx, way_idx);
+  }
 
   if constexpr (champsim::debug_print) {
     fmt::print("[{}] {} instr_id: {} address: {} v_address: {} set: {} way: {} type: {} prefetch_metadata: {} cycle_enqueued: {} cycle: {}\n", NAME, __func__,
-               fill.instr_id, fill.address, fill.v_address, get_set_index(fill.address), way_idx, access_type_names.at(champsim::to_underlying(fill.type)),
+               fill.instr_id, fill.address, fill.v_address, set_idx, way_idx, access_type_names.at(champsim::to_underlying(fill.type)),
                fill.data_promise->pf_metadata, (fill.time_enqueued.time_since_epoch()) / clock_period, (current_time.time_since_epoch()) / clock_period);
   }
 
@@ -215,9 +226,9 @@ bool CACHE::handle_fill(const fill_type& fill)
     evicting_address = module_address(*way);
   }
 
-  auto metadata_thru = impl_prefetcher_cache_fill(module_address(fill), get_set_index(fill.address), way_idx, (fill.type == access_type::PREFETCH),
-                                                  evicting_address, fill.data_promise->pf_metadata);
-  impl_replacement_cache_fill(fill.cpu, get_set_index(fill.address), way_idx, module_address(fill), fill.ip, evicting_address, fill.type);
+  auto metadata_thru = impl_prefetcher_cache_fill(module_address(fill), set_idx, way_idx, (fill.type == access_type::PREFETCH), evicting_address,
+                                                  fill.data_promise->pf_metadata);
+  impl_replacement_cache_fill(fill.cpu, set_idx, way_idx, module_address(fill), fill.ip, evicting_address, fill.type);
 
   if (way != set_end) {
     if (way->valid && way->prefetch) {
@@ -228,7 +239,11 @@ bool CACHE::handle_fill(const fill_type& fill)
       ++sim_stats.pf_fill;
     }
 
-    *way = fill_block(fill, metadata_thru);
+    auto to_fill = fill_block(fill, metadata_thru);
+    if (early_clean_applies()) {
+      initialize_early_clean_fill_metadata(to_fill, fill);
+    }
+    *way = to_fill;
   }
 
   // COLLECT STATS
@@ -244,20 +259,24 @@ bool CACHE::handle_fill(const fill_type& fill)
   return true;
 }
 
-bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
+bool CACHE::try_hit(tag_lookup_type& handle_pkt)
 {
   cpu = handle_pkt.cpu;
 
   // access cache
   auto [set_begin, set_end] = get_set_span(handle_pkt.address);
+  const auto set_idx = get_set_index(handle_pkt.address);
+  if (early_clean_applies()) {
+    handle_pkt.early_clean_set_access_count = next_early_clean_set_access(set_idx);
+  }
   auto way = std::find_if(set_begin, set_end, [matcher = matches_address(handle_pkt.address)](const auto& x) { return x.valid && matcher(x); });
   const auto hit = (way != set_end);
   const auto useful_prefetch = (hit && way->prefetch && !handle_pkt.prefetch_from_this);
 
   if constexpr (champsim::debug_print) {
     fmt::print("[{}] {} instr_id: {} address: {} v_address: {} data: {} set: {} way: {} ({}) type: {} cycle: {}\n", NAME, __func__, handle_pkt.instr_id,
-               handle_pkt.address, handle_pkt.v_address, handle_pkt.data, get_set_index(handle_pkt.address), std::distance(set_begin, way),
-               hit ? "HIT" : "MISS", access_type_names.at(champsim::to_underlying(handle_pkt.type)), current_time.time_since_epoch() / clock_period);
+               handle_pkt.address, handle_pkt.v_address, handle_pkt.data, set_idx, std::distance(set_begin, way), hit ? "HIT" : "MISS",
+               access_type_names.at(champsim::to_underlying(handle_pkt.type)), current_time.time_since_epoch() / clock_period);
   }
 
   auto metadata_thru = handle_pkt.pf_metadata;
@@ -267,8 +286,7 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 
   // update replacement policy
   const auto way_idx = std::distance(set_begin, way);
-  impl_update_replacement_state(handle_pkt.cpu, get_set_index(handle_pkt.address), way_idx, module_address(handle_pkt), handle_pkt.ip, {}, handle_pkt.type,
-                                hit);
+  impl_update_replacement_state(handle_pkt.cpu, set_idx, way_idx, module_address(handle_pkt), handle_pkt.ip, {}, handle_pkt.type, hit);
 
   if (hit) {
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
@@ -276,6 +294,10 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
     response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.instr_depend_on_me};
     for (auto* ret : handle_pkt.to_return) {
       ret->push_back(response);
+    }
+
+    if (early_clean_applies()) {
+      update_early_clean_hit_metadata(*way, handle_pkt);
     }
 
     way->dirty |= (handle_pkt.type == access_type::WRITE);
@@ -504,7 +526,7 @@ long CACHE::operate()
   auto [tag_check_ready_begin, tag_check_ready_end] =
       champsim::get_span_p(std::begin(inflight_tag_check), std::end(inflight_tag_check), tag_check_bw,
                            [is_ready, is_translated](const auto& pkt) { return is_ready(pkt) && is_translated(pkt); });
-  auto hits_end = std::stable_partition(tag_check_ready_begin, tag_check_ready_end, [this](const auto& pkt) { return this->try_hit(pkt); });
+  auto hits_end = std::stable_partition(tag_check_ready_begin, tag_check_ready_end, [this](auto& pkt) { return this->try_hit(pkt); });
   auto finish_tag_check_end = std::stable_partition(hits_end, tag_check_ready_end, do_handle_miss);
   tag_check_bw.consume(std::distance(tag_check_ready_begin, finish_tag_check_end));
   inflight_tag_check.erase(tag_check_ready_begin, finish_tag_check_end);
@@ -564,6 +586,7 @@ long CACHE::invalidate_entry(champsim::address inval_addr)
 
   if (inv_way != end) {
     inv_way->valid = false;
+    inv_way->dirty_since_cycle = EARLY_CLEAN_INVALID_FEATURE;
   }
 
   return std::distance(begin, inv_way);
@@ -685,6 +708,88 @@ void CACHE::issue_translation(tag_lookup_type& q_entry) const
 }
 
 std::size_t CACHE::get_mshr_occupancy() const { return std::size(MSHR); }
+
+bool CACHE::early_clean_applies() const { return NAME == "LLC"; }
+
+uint64_t CACHE::current_cycle() const { return static_cast<uint64_t>(current_time.time_since_epoch() / clock_period); }
+
+uint64_t CACHE::elapsed_since(uint64_t now, uint64_t then)
+{
+  if (then == EARLY_CLEAN_INVALID_FEATURE || now < then) {
+    return EARLY_CLEAN_INVALID_FEATURE;
+  }
+  return now - then;
+}
+
+uint64_t CACHE::next_early_clean_set_access(long set)
+{
+  auto& set_access_counter = early_clean_set_access_counter.at(static_cast<std::size_t>(set));
+  return set_access_counter++;
+}
+
+void CACHE::initialize_early_clean_fill_metadata(BLOCK& to_fill, const fill_type& fill) const
+{
+  const auto now = current_cycle();
+  const auto access_cycle = static_cast<uint64_t>(fill.time_enqueued.time_since_epoch() / clock_period);
+
+  to_fill.insertion_cycle = now;
+  to_fill.last_access_cycle = access_cycle;
+  to_fill.previous_set_access_count = fill.early_clean_set_access_count;
+  to_fill.preuse_distance = EARLY_CLEAN_INVALID_FEATURE;
+  to_fill.hits_since_insertion = 0;
+  to_fill.last_access_type = fill.type;
+  to_fill.dirty_since_cycle = to_fill.dirty ? now : EARLY_CLEAN_INVALID_FEATURE;
+}
+
+void CACHE::update_early_clean_hit_metadata(BLOCK& hit_block, const tag_lookup_type& handle_pkt)
+{
+  const auto now = current_cycle();
+  if (hit_block.previous_set_access_count != EARLY_CLEAN_INVALID_FEATURE && handle_pkt.early_clean_set_access_count > hit_block.previous_set_access_count) {
+    hit_block.preuse_distance = handle_pkt.early_clean_set_access_count - hit_block.previous_set_access_count - 1;
+  } else {
+    hit_block.preuse_distance = EARLY_CLEAN_INVALID_FEATURE;
+  }
+
+  hit_block.previous_set_access_count = handle_pkt.early_clean_set_access_count;
+  hit_block.last_access_cycle = now;
+  hit_block.last_access_type = handle_pkt.type;
+  ++hit_block.hits_since_insertion;
+
+  if (!hit_block.dirty && handle_pkt.type == access_type::WRITE) {
+    hit_block.dirty_since_cycle = now;
+  }
+}
+
+CACHE::EarlyCleanFeatures CACHE::make_early_clean_feature_snapshot(const BLOCK& candidate, long set, long way) const
+{
+  const auto now = current_cycle();
+  return EarlyCleanFeatures{static_cast<uint8_t>(candidate.dirty ? 1 : 0),
+                            elapsed_since(now, impl_get_replacement_recency(set, way)),
+                            elapsed_since(now, candidate.last_access_cycle),
+                            elapsed_since(now, candidate.insertion_cycle),
+                            candidate.preuse_distance,
+                            candidate.hits_since_insertion,
+                            candidate.last_access_type,
+                            set,
+                            early_clean_write_queue_occupancy(),
+                            early_clean_read_queue_occupancy(),
+                            get_mshr_occupancy(),
+                            candidate.dirty ? elapsed_since(now, candidate.dirty_since_cycle) : EARLY_CLEAN_INVALID_FEATURE};
+}
+
+std::size_t CACHE::early_clean_read_queue_occupancy() const
+{
+  return std::accumulate(std::begin(upper_levels), std::end(upper_levels), std::size_t{0},
+                         [](auto acc, const auto* ulptr) { return acc + ulptr->rq_occupancy(); });
+}
+
+std::size_t CACHE::early_clean_write_queue_occupancy() const
+{
+  return std::accumulate(std::begin(upper_levels), std::end(upper_levels), std::size_t{0},
+                         [](auto acc, const auto* ulptr) { return acc + ulptr->wq_occupancy(); });
+}
+
+const std::optional<CACHE::EarlyCleanFeatures>& CACHE::get_last_early_clean_feature_snapshot() const { return last_early_clean_feature_snapshot; }
 
 std::vector<std::size_t> CACHE::get_rq_occupancy() const
 {
@@ -831,6 +936,8 @@ void CACHE::impl_replacement_cache_fill(uint32_t triggering_cpu, long set, long 
 }
 
 void CACHE::impl_replacement_final_stats() const { repl_module_pimpl->impl_replacement_final_stats(); }
+
+uint64_t CACHE::impl_get_replacement_recency(long set, long way) const { return repl_module_pimpl->impl_get_recency(set, way); }
 
 void CACHE::initialize()
 {

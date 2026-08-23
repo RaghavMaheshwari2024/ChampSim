@@ -23,6 +23,7 @@ public:
                               access_type type);
   void update_replacement_state(uint32_t triggering_cpu, long set, long way, champsim::address full_addr, champsim::address ip, champsim::address victim_addr,
                                 access_type type, uint8_t hit);
+  uint64_t get_recency(long set, long way) const;
   // void replacement_final_stats()
 };
 

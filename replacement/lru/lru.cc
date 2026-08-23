@@ -34,3 +34,5 @@ void lru::update_replacement_state(uint32_t triggering_cpu, long set, long way, 
   if (hit && access_type{type} != access_type::WRITE) // Skip this for writeback hits
     last_used_cycles.at((std::size_t)(set * NUM_WAY + way)) = cycle++;
 }
+
+uint64_t lru::get_recency(long set, long way) const { return last_used_cycles.at((std::size_t)(set * NUM_WAY + way)); }

@@ -29,6 +29,7 @@
 #include <iterator> // for size
 #include <limits>   // for numeric_limits
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -72,6 +73,7 @@ class CACHE : public champsim::operable
     bool skip_fill;
     bool is_translated;
     bool translate_issued = false;
+    uint64_t early_clean_set_access_count = std::numeric_limits<uint64_t>::max();
 
     uint8_t asid[2] = {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()};
 
@@ -100,6 +102,7 @@ public:
 
     access_type type;
     bool prefetch_from_this;
+    uint64_t early_clean_set_access_count = std::numeric_limits<uint64_t>::max();
 
     uint8_t asid[2] = {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()};
 
@@ -113,7 +116,7 @@ public:
   };
 
 private:
-  bool try_hit(const tag_lookup_type& handle_pkt);
+  bool try_hit(tag_lookup_type& handle_pkt);
   bool handle_fill(const fill_type& fill);
   bool handle_miss(const tag_lookup_type& handle_pkt);
   bool handle_write(const tag_lookup_type& handle_pkt);
@@ -124,6 +127,22 @@ private:
 
 public:
   using BLOCK = champsim::cache_block;
+  static constexpr uint64_t EARLY_CLEAN_INVALID_FEATURE = std::numeric_limits<uint64_t>::max();
+
+  struct EarlyCleanFeatures {
+    uint8_t dirty;
+    uint64_t recency;
+    uint64_t age_since_last_access;
+    uint64_t age_since_insertion;
+    uint64_t preuse_distance;
+    uint64_t hits_since_insertion;
+    access_type last_access_type;
+    long cache_set;
+    std::size_t write_queue_occupancy;
+    std::size_t read_queue_occupancy;
+    std::size_t mshr_occupancy;
+    uint64_t time_since_became_dirty;
+  };
 
 private:
   static BLOCK fill_block(fill_type fill, uint32_t metadata);
@@ -144,10 +163,22 @@ private:
 
   auto matches_address(champsim::address address) const;
   std::pair<fill_type, request_type> mshr_and_forward_packet(const tag_lookup_type& handle_pkt);
+  [[nodiscard]] bool early_clean_applies() const;
+  [[nodiscard]] uint64_t current_cycle() const;
+  [[nodiscard]] static uint64_t elapsed_since(uint64_t now, uint64_t then);
+  [[nodiscard]] uint64_t next_early_clean_set_access(long set);
+  void initialize_early_clean_fill_metadata(BLOCK& to_fill, const fill_type& fill) const;
+  void update_early_clean_hit_metadata(BLOCK& hit_block, const tag_lookup_type& handle_pkt);
+  [[nodiscard]] EarlyCleanFeatures make_early_clean_feature_snapshot(const BLOCK& candidate, long set, long way) const;
+  [[nodiscard]] std::size_t early_clean_read_queue_occupancy() const;
+  [[nodiscard]] std::size_t early_clean_write_queue_occupancy() const;
+  [[nodiscard]] uint64_t impl_get_replacement_recency(long set, long way) const;
 
   std::deque<tag_lookup_type> internal_PQ{};
   std::deque<tag_lookup_type> inflight_tag_check{};
   std::deque<tag_lookup_type> translation_stash{};
+  std::vector<uint64_t> early_clean_set_access_counter{};
+  std::optional<EarlyCleanFeatures> last_early_clean_feature_snapshot{};
 
 public:
   std::vector<channel_type*> upper_levels;
@@ -205,6 +236,7 @@ public:
   [[nodiscard]] std::vector<std::size_t> get_pq_occupancy() const;
   [[nodiscard]] std::vector<std::size_t> get_pq_size() const;
   [[nodiscard]] std::vector<double> get_pq_occupancy_ratio() const;
+  [[nodiscard]] const std::optional<EarlyCleanFeatures>& get_last_early_clean_feature_snapshot() const;
 
   [[deprecated("Use get_set_index() instead.")]] [[nodiscard]] uint64_t get_set(uint64_t address) const;
   [[deprecated("This function should not be used to access the blocks directly.")]] [[nodiscard]] uint64_t get_way(uint64_t address, uint64_t set) const;
@@ -249,6 +281,7 @@ public:
     virtual void impl_replacement_cache_fill(uint32_t triggering_cpu, long set, long way, champsim::address full_addr, champsim::address ip,
                                              champsim::address victim_addr, access_type type) = 0;
     virtual void impl_replacement_final_stats() = 0;
+    virtual uint64_t impl_get_recency(long set, long way) const = 0;
   };
 
   template <typename... Ps>
@@ -290,6 +323,7 @@ public:
     void impl_replacement_cache_fill(uint32_t triggering_cpu, long set, long way, champsim::address full_addr, champsim::address ip,
                                      champsim::address victim_addr, access_type type) final;
     void impl_replacement_final_stats() final;
+    [[nodiscard]] uint64_t impl_get_recency(long set, long way) const final;
   };
 
   std::unique_ptr<prefetcher_module_concept> pref_module_pimpl;
@@ -317,10 +351,11 @@ public:
 
   template <typename... Ps, typename... Rs>
   explicit CACHE(champsim::cache_builder<champsim::cache_builder_module_type_holder<Ps...>, champsim::cache_builder_module_type_holder<Rs...>> b)
-      : champsim::operable(b.m_clock_period), upper_levels(b.m_uls), lower_level(b.m_ll), lower_translate(b.m_lt), NAME(b.m_name), NUM_SET(b.get_num_sets()),
-        NUM_WAY(b.get_num_ways()), MSHR_SIZE(b.get_num_mshrs()), PQ_SIZE(b.m_pq_size), HIT_LATENCY(b.get_hit_latency() * b.m_clock_period),
-        FILL_LATENCY(b.get_fill_latency() * b.m_clock_period), OFFSET_BITS(b.m_offset_bits), MAX_TAG(b.get_tag_bandwidth()), MAX_FILL(b.get_fill_bandwidth()),
-        prefetch_as_load(b.m_pref_load), match_offset_bits(b.m_wq_full_addr), virtual_prefetch(b.m_va_pref), pref_activate_mask(b.m_pref_act_mask),
+      : champsim::operable(b.m_clock_period), early_clean_set_access_counter(static_cast<std::size_t>(b.get_num_sets()), 0), upper_levels(b.m_uls),
+        lower_level(b.m_ll), lower_translate(b.m_lt), NAME(b.m_name), NUM_SET(b.get_num_sets()), NUM_WAY(b.get_num_ways()), MSHR_SIZE(b.get_num_mshrs()),
+        PQ_SIZE(b.m_pq_size), HIT_LATENCY(b.get_hit_latency() * b.m_clock_period), FILL_LATENCY(b.get_fill_latency() * b.m_clock_period),
+        OFFSET_BITS(b.m_offset_bits), MAX_TAG(b.get_tag_bandwidth()), MAX_FILL(b.get_fill_bandwidth()), prefetch_as_load(b.m_pref_load),
+        match_offset_bits(b.m_wq_full_addr), virtual_prefetch(b.m_va_pref), pref_activate_mask(b.m_pref_act_mask),
         pref_module_pimpl(std::make_unique<prefetcher_module_model<Ps...>>(this)), repl_module_pimpl(std::make_unique<replacement_module_model<Rs...>>(this))
   {
   }
@@ -528,6 +563,21 @@ void CACHE::replacement_module_model<Rs...>::impl_replacement_final_stats()
   };
 
   std::apply([&](auto&... r) { (..., process_one(r)); }, intern_);
+}
+
+template <typename... Rs>
+uint64_t CACHE::replacement_module_model<Rs...>::impl_get_recency(long set, long way) const
+{
+  uint64_t result = CACHE::EARLY_CLEAN_INVALID_FEATURE;
+  [[maybe_unused]] auto process_one = [&](const auto& r) {
+    using namespace champsim::modules;
+
+    if constexpr (replacement::has_get_recency<decltype(r), long, long>)
+      result = static_cast<uint64_t>(r.get_recency(set, way));
+  };
+
+  std::apply([&](const auto&... r) { (..., process_one(r)); }, intern_);
+  return result;
 }
 
 #ifdef SET_ASIDE_CHAMPSIM_MODULE

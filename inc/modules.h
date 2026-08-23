@@ -182,6 +182,11 @@ struct replacement : public bound_to<CACHE> {
   static auto final_stats_member_impl(long) -> std::false_type;
 
   template <typename T, typename... Args>
+  static auto get_recency_member_impl(int) -> decltype(std::declval<T>().get_recency(std::declval<Args>()...), std::true_type{});
+  template <typename, typename...>
+  static auto get_recency_member_impl(long) -> std::false_type;
+
+  template <typename T, typename... Args>
   constexpr static bool has_initialize = decltype(initialize_member_impl<T, Args...>(0))::value;
 
   template <typename T, typename... Args>
@@ -195,6 +200,9 @@ struct replacement : public bound_to<CACHE> {
 
   template <typename T, typename... Args>
   constexpr static bool has_final_stats = decltype(final_stats_member_impl<T, Args...>(0))::value;
+
+  template <typename T, typename... Args>
+  constexpr static bool has_get_recency = decltype(get_recency_member_impl<T, Args...>(0))::value;
 };
 } // namespace champsim::modules
 

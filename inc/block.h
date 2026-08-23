@@ -17,6 +17,10 @@
 #ifndef BLOCK_H
 #define BLOCK_H
 
+#include <cstdint>
+#include <limits>
+
+#include "access_type.h"
 #include "champsim.h"
 
 namespace champsim
@@ -31,6 +35,14 @@ struct cache_block {
   champsim::address data{};
 
   uint32_t pf_metadata = 0;
+
+  uint64_t insertion_cycle = std::numeric_limits<uint64_t>::max();
+  uint64_t last_access_cycle = std::numeric_limits<uint64_t>::max();
+  uint64_t previous_set_access_count = std::numeric_limits<uint64_t>::max();
+  uint64_t preuse_distance = std::numeric_limits<uint64_t>::max();
+  uint64_t hits_since_insertion = 0;
+  uint64_t dirty_since_cycle = std::numeric_limits<uint64_t>::max();
+  access_type last_access_type = access_type::NUM_TYPES;
 };
 } // namespace champsim
 
