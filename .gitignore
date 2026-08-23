@@ -32,4 +32,6 @@ compile_commands.json
 **/.DS_Store
 
 dpc3_traces
+vcpkg
+
 
