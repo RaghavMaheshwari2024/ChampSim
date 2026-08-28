@@ -103,6 +103,27 @@ class CACHE : public MEMORY {
     stack<uint64_t> mshr_event_track;
     stack<uint64_t> wq_event_track;
     uint64_t next_write_service_cycle; 
+    struct EarlyCleanFeatures {
+        uint8_t dirty;
+        uint64_t recency;
+        uint64_t age_since_last_access;
+        uint64_t age_since_insertion;
+        uint64_t preuse_distance;
+        uint64_t hits_since_insertion;
+        uint8_t last_access_type;
+        uint32_t cache_set;
+        uint64_t time_since_became_dirty;
+        uint32_t write_queue_occupancy;
+        uint32_t read_queue_occupancy;
+        uint32_t mshr_occupancy;
+    };
+
+    // One sequence counter per set and one streaming CSV per input trace.
+    // UINT64_MAX is the explicit invalid sentinel for unavailable ages and
+    // distances; UINT8_MAX is the invalid access-type sentinel.
+    vector<uint64_t> early_clean_set_access_count;
+    ofstream early_clean_output[NUM_CPUS];
+    string early_clean_trace_id[NUM_CPUS];
     struct PortScheduleEntry {
         uint64_t start_cycle   = 0;
         uint64_t end_cycle     = 0;
@@ -177,6 +198,7 @@ class CACHE : public MEMORY {
         bypassed_writes=0;
         next_write_service_cycle=0;
            port_schedule_table.clear();
+        early_clean_set_access_count.assign(NUM_SET, 0);
            
         // cache block
         block = new BLOCK* [NUM_SET];
@@ -308,6 +330,11 @@ class CACHE : public MEMORY {
              lru_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type);
              uint64_t find_non_overlapping_global_cycle(uint64_t latency, int core_id, bool is_write);
     void remove_completed_request(uint64_t current_cycle, uint32_t core_id);
+
+    void initialize_early_clean_output(uint32_t trace_cpu, const string& trace_id),
+         record_llc_access(uint32_t set, int way, PACKET *packet, uint64_t cycle),
+         record_llc_lru_use(uint32_t set, uint32_t way, uint32_t type, uint8_t hit, uint64_t cycle),
+         snapshot_llc_victim(uint32_t trace_cpu, uint32_t set, uint32_t way, uint64_t cycle);
 };
 
 #endif

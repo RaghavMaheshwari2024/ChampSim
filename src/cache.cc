@@ -1,8 +1,134 @@
 #include "cache.h"
 #include "set.h"
+#include <cerrno>
+#include <cctype>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 
 uint64_t l2pf_access = 0;
+
+namespace {
+string csv_escape(const string& value)
+{
+    string escaped{"\""};
+    for (char character : value) {
+        if (character == '\"')
+            escaped += "\"\"";
+        else
+            escaped += character;
+    }
+    escaped += '\"';
+    return escaped;
+}
+
+string early_clean_filename(const string& trace_id)
+{
+    string filename = trace_id.substr(trace_id.find_last_of("/\\") + 1);
+    for (char& character : filename) {
+        if (!(std::isalnum(static_cast<unsigned char>(character)) || character == '.' || character == '_' || character == '-'))
+            character = '_';
+    }
+    return filename + ".csv";
+}
+}
+
+void CACHE::initialize_early_clean_output(uint32_t trace_cpu, const string& trace_id)
+{
+    assert(trace_cpu < NUM_CPUS);
+
+    if (mkdir("results_features", 0755) != 0 && errno != EEXIST) {
+        cerr << "Unable to create results_features for Early-Clean CSV output" << endl;
+        assert(0);
+    }
+
+    early_clean_trace_id[trace_cpu] = trace_id;
+    early_clean_output[trace_cpu].open("results_features/" + early_clean_filename(trace_id), ios::out | ios::trunc);
+    if (!early_clean_output[trace_cpu]) {
+        cerr << "Unable to open Early-Clean CSV output for " << trace_id << endl;
+        assert(0);
+    }
+
+    early_clean_output[trace_cpu]
+        << "trace_id,cycle,cache_set,way,dirty,recency,age_since_last_access,age_since_insertion,preuse_distance,hits_since_insertion,last_access_type,write_queue_occupancy,read_queue_occupancy,mshr_occupancy,time_since_became_dirty\n";
+}
+
+void CACHE::record_llc_access(uint32_t set, int way, PACKET *packet, uint64_t cycle)
+{
+    assert(cache_type == IS_LLC);
+    assert(set < NUM_SET);
+
+    const uint64_t current_set_access_count = ++early_clean_set_access_count[set];
+    packet->llc_set_access_count = current_set_access_count;
+    if (way < 0)
+        return;
+
+    BLOCK& line = block[set][way];
+    line.last_access_cycle = cycle;
+    line.last_access_type = packet->type;
+    line.preuse_distance = (line.previous_set_access_count == UINT64_MAX)
+        ? UINT64_MAX
+        : current_set_access_count - line.previous_set_access_count - 1;
+    line.previous_set_access_count = current_set_access_count;
+    line.hits_since_insertion++;
+}
+
+void CACHE::record_llc_lru_use(uint32_t set, uint32_t way, uint32_t type, uint8_t hit, uint64_t cycle)
+{
+    // The selected LLC replacement implementation is rank-LRU. Its only
+    // non-use update is a writeback hit, which returns before lru_update().
+    if ((hit && type == WRITEBACK) || way >= NUM_WAY)
+        return;
+    block[set][way].last_used_cycle = cycle;
+}
+
+void CACHE::snapshot_llc_victim(uint32_t trace_cpu, uint32_t set, uint32_t way, uint64_t cycle)
+{
+    assert(trace_cpu < NUM_CPUS);
+    assert(set < NUM_SET);
+    assert(way < NUM_WAY);
+
+    // An invalid way is chosen during cold fill but has no LLC line whose
+    // feature state can be observed or used as an Early-Clean candidate.
+    if (!block[set][way].valid)
+        return;
+
+    const BLOCK& line = block[set][way];
+    EarlyCleanFeatures features;
+    features.dirty = line.dirty;
+    features.recency = (line.last_used_cycle == UINT64_MAX) ? UINT64_MAX : cycle - line.last_used_cycle;
+    features.age_since_last_access = (line.last_access_cycle == UINT64_MAX) ? UINT64_MAX : cycle - line.last_access_cycle;
+    features.age_since_insertion = (line.insertion_cycle == UINT64_MAX) ? UINT64_MAX : cycle - line.insertion_cycle;
+    features.preuse_distance = line.preuse_distance;
+    features.hits_since_insertion = line.hits_since_insertion;
+    features.last_access_type = line.last_access_type;
+    features.cache_set = set;
+    features.time_since_became_dirty = (line.dirty && line.dirty_since_cycle != UINT64_MAX)
+        ? cycle - line.dirty_since_cycle
+        : UINT64_MAX;
+    features.write_queue_occupancy = WQ.occupancy;
+    features.read_queue_occupancy = RQ.occupancy;
+    features.mshr_occupancy = MSHR.occupancy;
+
+    assert(early_clean_output[trace_cpu]);
+    early_clean_output[trace_cpu]
+        << csv_escape(early_clean_trace_id[trace_cpu]) << ','
+        << cycle << ','
+        << features.cache_set << ','
+        << way << ','
+        << +features.dirty << ','
+        << features.recency << ','
+        << features.age_since_last_access << ','
+        << features.age_since_insertion << ','
+        << features.preuse_distance << ','
+        << features.hits_since_insertion << ','
+        << +features.last_access_type << ','
+        << features.write_queue_occupancy << ','
+        << features.read_queue_occupancy << ','
+        << features.mshr_occupancy << ','
+        << features.time_since_became_dirty << '\n';
+}
+
 void CACHE::handle_fill()
 {
     // handle fill
@@ -25,6 +151,8 @@ void CACHE::handle_fill()
             MSHR.entry[mshr_index].llc_repl_start_cycle = current_core_cycle[fill_cpu];
             way = llc_find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set, block[set], MSHR.entry[mshr_index].ip, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].type);
             MSHR.entry[mshr_index].llc_victim_selected_cycle = current_core_cycle[fill_cpu];
+            if (way < NUM_WAY)
+                snapshot_llc_victim(fill_cpu, set, way, current_core_cycle[fill_cpu]);
         }
         else
             way = find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set, block[set], MSHR.entry[mshr_index].ip, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].type);
@@ -177,6 +305,7 @@ void CACHE::handle_fill()
                 llc_replacement_latency += (MSHR.entry[mshr_index].llc_victim_selected_cycle - MSHR.entry[mshr_index].llc_repl_start_cycle);
                 llc_eviction_latency += (MSHR.entry[mshr_index].llc_victim_invalidated_cycle - MSHR.entry[mshr_index].llc_repl_start_cycle);
                 llc_update_replacement_state(fill_cpu, set, way, MSHR.entry[mshr_index].full_addr, MSHR.entry[mshr_index].ip, block[set][way].full_addr, MSHR.entry[mshr_index].type, 0);
+                record_llc_lru_use(set, way, MSHR.entry[mshr_index].type, 0, current_core_cycle[fill_cpu]);
                if(block[set][way].used==0 && all_warmup_complete>NUM_CPUS && block[set][way].valid==1)
               deadblock++;
               }
@@ -274,11 +403,14 @@ void CACHE::handle_writeback()
         // access cache
         uint32_t set = get_set(WQ.entry[index].address);
         int way = check_hit(&WQ.entry[index]);
+        if (cache_type == IS_LLC)
+            record_llc_access(set, way, &WQ.entry[index], current_core_cycle[writeback_cpu]);
         
         if (way >= 0) { // writeback hit (or RFO hit for L1D)
 
             if (cache_type == IS_LLC) {
                 llc_update_replacement_state(writeback_cpu, set, way, block[set][way].full_addr, WQ.entry[index].ip, 0, WQ.entry[index].type, 1);
+                record_llc_lru_use(set, way, WQ.entry[index].type, 1, current_core_cycle[writeback_cpu]);
                 writes_set[set][way]++;   //guru
             }
             else
@@ -455,6 +587,8 @@ void CACHE::handle_writeback()
                 uint32_t set = get_set(WQ.entry[index].address), way;
                 if (cache_type == IS_LLC) {
                     way = llc_find_victim(writeback_cpu, WQ.entry[index].instr_id, set, block[set], WQ.entry[index].ip, WQ.entry[index].full_addr, WQ.entry[index].type);
+                    if (way < NUM_WAY)
+                        snapshot_llc_victim(writeback_cpu, set, way, current_core_cycle[writeback_cpu]);
                 }
                 else
                     way = find_victim(writeback_cpu, WQ.entry[index].instr_id, set, block[set], WQ.entry[index].ip, WQ.entry[index].full_addr, WQ.entry[index].type);
@@ -536,6 +670,7 @@ void CACHE::handle_writeback()
                     // update replacement policy
                     if (cache_type == IS_LLC) {
                         llc_update_replacement_state(writeback_cpu, set, way, WQ.entry[index].full_addr, WQ.entry[index].ip, block[set][way].full_addr, WQ.entry[index].type, 0);
+                        record_llc_lru_use(set, way, WQ.entry[index].type, 0, current_core_cycle[writeback_cpu]);
                         if(block[set][way].used==0 && all_warmup_complete>NUM_CPUS && block[set][way].valid==1)
               deadblock++;
                       }
@@ -602,6 +737,8 @@ void CACHE::handle_read()
             // access cache
             uint32_t set = get_set(RQ.entry[index].address);
             int way = check_hit(&RQ.entry[index]);
+            if (cache_type == IS_LLC)
+                record_llc_access(set, way, &RQ.entry[index], current_core_cycle[read_cpu]);
             
             if (way >= 0) { // read hit
 
@@ -646,6 +783,7 @@ void CACHE::handle_read()
                 // update replacement policy
                 if (cache_type == IS_LLC) {
                     llc_update_replacement_state(read_cpu, set, way, block[set][way].full_addr, RQ.entry[index].ip, 0, RQ.entry[index].type, 1);
+                    record_llc_lru_use(set, way, RQ.entry[index].type, 1, current_core_cycle[read_cpu]);
                 
                 }
                 else
@@ -942,12 +1080,15 @@ void CACHE::handle_prefetch()
             // access cache
             uint32_t set = get_set(PQ.entry[index].address);
             int way = check_hit(&PQ.entry[index]);
+            if (cache_type == IS_LLC)
+                record_llc_access(set, way, &PQ.entry[index], current_core_cycle[prefetch_cpu]);
             
             if (way >= 0) { // prefetch hit
 
                 // update replacement policy
                 if (cache_type == IS_LLC) {
                     llc_update_replacement_state(prefetch_cpu, set, way, block[set][way].full_addr, PQ.entry[index].ip, 0, PQ.entry[index].type, 1);
+                    record_llc_lru_use(set, way, PQ.entry[index].type, 1, current_core_cycle[prefetch_cpu]);
 
                 }
                 else
@@ -1225,6 +1366,20 @@ void CACHE::fill_cache(uint32_t set, uint32_t way, PACKET *packet)
     block[set][way].ip = packet->ip;
     block[set][way].cpu = packet->cpu;
     block[set][way].instr_id = packet->instr_id;
+
+    if (cache_type == IS_LLC) {
+        // A fill begins a new slot lifetime. The access which caused this
+        // fill is the first access in that lifetime, so its stored preuse
+        // feature is invalid while its set sequence number seeds the next
+        // access's preuse-distance calculation.
+        block[set][way].insertion_cycle = current_core_cycle[packet->cpu];
+        block[set][way].last_access_cycle = current_core_cycle[packet->cpu];
+        block[set][way].last_used_cycle = current_core_cycle[packet->cpu];
+        block[set][way].previous_set_access_count = packet->llc_set_access_count;
+        block[set][way].preuse_distance = UINT64_MAX;
+        block[set][way].hits_since_insertion = 0;
+        block[set][way].last_access_type = packet->type;
+    }
 
 
     if(cache_type==IS_LLC)

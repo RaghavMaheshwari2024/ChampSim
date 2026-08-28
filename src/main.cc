@@ -1018,6 +1018,8 @@ int main(int argc, char** argv)
 
     uncore.LLC.llc_initialize_replacement();
     uncore.LLC.llc_prefetcher_initialize();
+    for (uint32_t i=0; i<NUM_CPUS; i++)
+        uncore.LLC.initialize_early_clean_output(i, ooo_cpu[i].trace_string);
 
     // simulation entry point
     start_time = time(NULL);

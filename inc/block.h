@@ -29,7 +29,16 @@ class BLOCK {
 
     // replacement state
     uint32_t lru;
-    uint64_t dirty_since_cycle;
+    // Early-Clean feature instrumentation. These fields describe the line
+    // currently occupying this cache slot; they do not affect cache state.
+    uint8_t last_access_type;
+    uint64_t dirty_since_cycle,
+             insertion_cycle,
+             last_access_cycle,
+             last_used_cycle,
+             previous_set_access_count,
+             preuse_distance,
+             hits_since_insertion;
 
     BLOCK() {
         valid = 0;
@@ -51,7 +60,14 @@ class BLOCK {
         instr_id = 0;
 
         lru = 0;
+        last_access_type = UINT8_MAX;
         dirty_since_cycle = UINT64_MAX;
+        insertion_cycle = UINT64_MAX;
+        last_access_cycle = UINT64_MAX;
+        last_used_cycle = UINT64_MAX;
+        previous_set_access_count = UINT64_MAX;
+        preuse_distance = UINT64_MAX;
+        hits_since_insertion = 0;
     };
 };
 
@@ -130,6 +146,10 @@ class PACKET {
              llc_refill_start_cycle,
              llc_refill_complete_cycle;
 
+    // Set by the LLC at the actual cache lookup. It carries the per-set
+    // access sequence number from a miss to its later fill.
+    uint64_t llc_set_access_count;
+
     PACKET() {
         instruction = 0;
         is_data = 1;
@@ -155,6 +175,7 @@ class PACKET {
         llc_writeback_complete_cycle = UINT64_MAX;
         llc_refill_start_cycle = UINT64_MAX;
         llc_refill_complete_cycle = UINT64_MAX;
+        llc_set_access_count = UINT64_MAX;
 
         fill_level = -1; 
         rob_signal = -1;
