@@ -1198,6 +1198,7 @@ int main(int argc, char** argv)
 
 #ifndef CRC2_COMPILE
     uncore.LLC.llc_replacement_final_stats();
+    uncore.LLC.finalize_all_pending_samples(GLOBAL_CYCLE);
     print_dram_stats();
     print_branch_stats();
 #endif

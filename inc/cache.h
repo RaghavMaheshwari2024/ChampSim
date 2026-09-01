@@ -103,6 +103,8 @@ class CACHE : public MEMORY {
     stack<uint64_t> mshr_event_track;
     stack<uint64_t> wq_event_track;
     uint64_t next_write_service_cycle; 
+    constexpr static uint64_t EARLY_CLEAN_REUSE_K = 50000;
+
     struct EarlyCleanFeatures {
         uint8_t dirty;
         uint64_t recency;
@@ -118,12 +120,46 @@ class CACHE : public MEMORY {
         uint32_t mshr_occupancy;
     };
 
-    // One sequence counter per set and one streaming CSV per input trace.
-    // UINT64_MAX is the explicit invalid sentinel for unavailable ages and
-    // distances; UINT8_MAX is the invalid access-type sentinel.
+    struct PendingSample {
+        uint64_t sample_id = 0;
+        uint32_t cpu = 0;
+        uint64_t sample_cycle = 0;
+        uint64_t line_addr = 0;
+        uint32_t set = 0;
+        uint32_t way = 0;
+        uint8_t dirty_at_sample = 0;
+
+        uint8_t demand_reused = 0;
+        uint8_t first_reuse_type = 255;
+        uint64_t next_demand_access_cycle = UINT64_MAX;
+        uint64_t time_to_next_demand_access = UINT64_MAX;
+        uint8_t reuse_within_K = 0;
+
+        uint8_t rewritten = 0;
+        uint64_t next_write_cycle = UINT64_MAX;
+        uint64_t time_to_next_write = UINT64_MAX;
+
+        uint8_t evicted = 0;
+        uint64_t eviction_cycle = UINT64_MAX;
+        uint64_t time_to_eviction = UINT64_MAX;
+        uint8_t dirty_at_eviction = 0;
+
+        uint8_t writeback_generated = 0;
+
+        uint64_t dirty_start_cycle = UINT64_MAX;
+        uint64_t dirty_lifetime = UINT64_MAX;
+
+        bool in_cache = true;
+    };
+
+    uint64_t early_clean_next_sample_id = 1;
     vector<uint64_t> early_clean_set_access_count;
-    ofstream early_clean_output[NUM_CPUS];
+    ofstream early_clean_features_output[NUM_CPUS];
+    ofstream early_clean_outcomes_output[NUM_CPUS];
     string early_clean_trace_id[NUM_CPUS];
+
+    std::unordered_multimap<uint64_t, uint64_t> early_clean_active_samples;
+    std::unordered_map<uint64_t, PendingSample> early_clean_pending_samples;
     struct PortScheduleEntry {
         uint64_t start_cycle   = 0;
         uint64_t end_cycle     = 0;
@@ -334,7 +370,11 @@ class CACHE : public MEMORY {
     void initialize_early_clean_output(uint32_t trace_cpu, const string& trace_id),
          record_llc_access(uint32_t set, int way, PACKET *packet, uint64_t cycle),
          record_llc_lru_use(uint32_t set, uint32_t way, uint32_t type, uint8_t hit, uint64_t cycle),
-         snapshot_llc_victim(uint32_t trace_cpu, uint32_t set, uint32_t way, uint64_t cycle);
+         snapshot_llc_victim(uint32_t trace_cpu, uint32_t set, uint32_t way, uint64_t cycle),
+         snapshot_llc_candidate(uint32_t trace_cpu, uint32_t set, uint32_t way, uint64_t cycle, const char* caller = "unknown"),
+         finalize_llc_eviction(uint32_t set, uint32_t way, uint64_t cycle, const char* caller = "unknown"),
+         emit_early_clean_outcome(const PendingSample& ps),
+         finalize_all_pending_samples(uint64_t current_cycle);
 };
 
 #endif

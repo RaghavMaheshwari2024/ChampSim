@@ -43,14 +43,25 @@ void CACHE::initialize_early_clean_output(uint32_t trace_cpu, const string& trac
     }
 
     early_clean_trace_id[trace_cpu] = trace_id;
-    early_clean_output[trace_cpu].open("results_features/" + early_clean_filename(trace_id), ios::out | ios::trunc);
-    if (!early_clean_output[trace_cpu]) {
-        cerr << "Unable to open Early-Clean CSV output for " << trace_id << endl;
+    string base_filename = early_clean_filename(trace_id);
+
+    early_clean_features_output[trace_cpu].open("results_features/" + base_filename + ".features.csv", ios::out | ios::trunc);
+    if (!early_clean_features_output[trace_cpu]) {
+        cerr << "Unable to open Early-Clean features CSV output for " << trace_id << endl;
         assert(0);
     }
 
-    early_clean_output[trace_cpu]
-        << "trace_id,cycle,cache_set,way,dirty,recency,age_since_last_access,age_since_insertion,preuse_distance,hits_since_insertion,last_access_type,write_queue_occupancy,read_queue_occupancy,mshr_occupancy,time_since_became_dirty\n";
+    early_clean_outcomes_output[trace_cpu].open("results_features/" + base_filename + ".outcomes.csv", ios::out | ios::trunc);
+    if (!early_clean_outcomes_output[trace_cpu]) {
+        cerr << "Unable to open Early-Clean outcomes CSV output for " << trace_id << endl;
+        assert(0);
+    }
+
+    early_clean_features_output[trace_cpu]
+        << "sample_id,trace_id,cycle,cache_set,way,dirty,recency,age_since_last_access,age_since_insertion,preuse_distance,hits_since_insertion,last_access_type,write_queue_occupancy,read_queue_occupancy,mshr_occupancy,time_since_became_dirty\n";
+
+    early_clean_outcomes_output[trace_cpu]
+        << "sample_id,reuse_within_K,demand_reused,first_reuse_type,next_demand_access_cycle,time_to_next_demand_access,rewritten,next_write_cycle,time_to_next_write,evicted,eviction_cycle,time_to_eviction,dirty_at_eviction,dirty_start_cycle,dirty_lifetime,writeback_generated\n";
 }
 
 void CACHE::record_llc_access(uint32_t set, int way, PACKET *packet, uint64_t cycle)
@@ -64,6 +75,34 @@ void CACHE::record_llc_access(uint32_t set, int way, PACKET *packet, uint64_t cy
         return;
 
     BLOCK& line = block[set][way];
+
+    uint64_t line_addr = line.address;
+    auto range = early_clean_active_samples.equal_range(line_addr);
+    for (auto it = range.first; it != range.second; ++it) {
+        uint64_t ps_id = it->second;
+        PendingSample& ps = early_clean_pending_samples[ps_id];
+        if (ps.in_cache && cycle > ps.sample_cycle) {
+            // Demand Reuse: program-relevant demand accesses (LOAD or RFO)
+            if (packet->type == LOAD || packet->type == RFO) {
+                ps.demand_reused = 1;
+                if (ps.next_demand_access_cycle == UINT64_MAX) {
+                    ps.first_reuse_type = packet->type;
+                    ps.next_demand_access_cycle = cycle;
+                    ps.time_to_next_demand_access = cycle - ps.sample_cycle;
+                    ps.reuse_within_K = (ps.time_to_next_demand_access <= EARLY_CLEAN_REUSE_K) ? 1 : 0;
+                }
+            }
+            // Dirtying Write Accesses: WRITEBACK or RFO
+            if (packet->type == WRITEBACK || packet->type == RFO) {
+                ps.rewritten = 1;
+                if (ps.next_write_cycle == UINT64_MAX) {
+                    ps.next_write_cycle = cycle;
+                    ps.time_to_next_write = cycle - ps.sample_cycle;
+                }
+            }
+        }
+    }
+
     line.last_access_cycle = cycle;
     line.last_access_type = packet->type;
     line.preuse_distance = (line.previous_set_access_count == UINT64_MAX)
@@ -71,6 +110,10 @@ void CACHE::record_llc_access(uint32_t set, int way, PACKET *packet, uint64_t cy
         : current_set_access_count - line.previous_set_access_count - 1;
     line.previous_set_access_count = current_set_access_count;
     line.hits_since_insertion++;
+
+    if (line.valid && line.dirty) {
+        snapshot_llc_candidate(packet->cpu, set, way, cycle, "record_access");
+    }
 }
 
 void CACHE::record_llc_lru_use(uint32_t set, uint32_t way, uint32_t type, uint8_t hit, uint64_t cycle)
@@ -84,16 +127,35 @@ void CACHE::record_llc_lru_use(uint32_t set, uint32_t way, uint32_t type, uint8_
 
 void CACHE::snapshot_llc_victim(uint32_t trace_cpu, uint32_t set, uint32_t way, uint64_t cycle)
 {
-    assert(trace_cpu < NUM_CPUS);
-    assert(set < NUM_SET);
-    assert(way < NUM_WAY);
+    // Victim selection sampling is disabled for Early-Clean candidate dataset collection
+    // because victim lines are immediately evicted and cannot be observed for future residency/reuse.
+}
 
-    // An invalid way is chosen during cold fill but has no LLC line whose
-    // feature state can be observed or used as an Early-Clean candidate.
-    if (!block[set][way].valid)
+void CACHE::snapshot_llc_candidate(uint32_t trace_cpu, uint32_t set, uint32_t way, uint64_t cycle, const char* caller)
+{
+    if (cache_type != IS_LLC || set >= NUM_SET || way >= NUM_WAY)
+        return;
+
+    if (all_warmup_complete <= NUM_CPUS)
+        return;
+
+    if (!block[set][way].valid || !block[set][way].dirty)
         return;
 
     const BLOCK& line = block[set][way];
+
+    auto range = early_clean_active_samples.equal_range(line.address);
+    for (auto it = range.first; it != range.second; ++it) {
+        uint64_t ps_id = it->second;
+        const PendingSample& ps = early_clean_pending_samples[ps_id];
+        if (ps.in_cache && ps.sample_cycle == cycle) {
+            return;
+        }
+    }
+
+    uint32_t target_cpu = (trace_cpu < NUM_CPUS) ? trace_cpu : 0;
+    uint64_t sample_id = early_clean_next_sample_id++;
+
     EarlyCleanFeatures features;
     features.dirty = line.dirty;
     features.recency = (line.last_used_cycle == UINT64_MAX) ? UINT64_MAX : cycle - line.last_used_cycle;
@@ -110,23 +172,160 @@ void CACHE::snapshot_llc_victim(uint32_t trace_cpu, uint32_t set, uint32_t way, 
     features.read_queue_occupancy = RQ.occupancy;
     features.mshr_occupancy = MSHR.occupancy;
 
-    assert(early_clean_output[trace_cpu]);
-    early_clean_output[trace_cpu]
-        << csv_escape(early_clean_trace_id[trace_cpu]) << ','
-        << cycle << ','
-        << features.cache_set << ','
-        << way << ','
-        << +features.dirty << ','
-        << features.recency << ','
-        << features.age_since_last_access << ','
-        << features.age_since_insertion << ','
-        << features.preuse_distance << ','
-        << features.hits_since_insertion << ','
-        << +features.last_access_type << ','
-        << features.write_queue_occupancy << ','
-        << features.read_queue_occupancy << ','
-        << features.mshr_occupancy << ','
-        << features.time_since_became_dirty << '\n';
+    if (early_clean_features_output[target_cpu].is_open()) {
+        early_clean_features_output[target_cpu]
+            << sample_id << ','
+            << csv_escape(early_clean_trace_id[target_cpu]) << ','
+            << cycle << ','
+            << features.cache_set << ','
+            << way << ','
+            << +features.dirty << ','
+            << features.recency << ','
+            << features.age_since_last_access << ','
+            << features.age_since_insertion << ','
+            << features.preuse_distance << ','
+            << features.hits_since_insertion << ','
+            << +features.last_access_type << ','
+            << features.write_queue_occupancy << ','
+            << features.read_queue_occupancy << ','
+            << features.mshr_occupancy << ','
+            << features.time_since_became_dirty << '\n';
+    }
+
+    PendingSample ps;
+    ps.sample_id = sample_id;
+    ps.cpu = target_cpu;
+    ps.sample_cycle = cycle;
+    ps.line_addr = line.address;
+    ps.set = set;
+    ps.way = way;
+    ps.dirty_at_sample = line.dirty;
+    ps.dirty_start_cycle = line.dirty_since_cycle;
+    ps.in_cache = true;
+
+    early_clean_pending_samples[sample_id] = ps;
+    early_clean_active_samples.insert({ps.line_addr, sample_id});
+}
+
+void CACHE::finalize_llc_eviction(uint32_t set, uint32_t way, uint64_t cycle, const char* caller)
+{
+    if (cache_type != IS_LLC || way >= NUM_WAY || !block[set][way].valid)
+        return;
+
+    uint64_t evict_addr = block[set][way].address;
+    auto range = early_clean_active_samples.equal_range(evict_addr);
+    for (auto it = range.first; it != range.second; ) {
+        uint64_t ps_id = it->second;
+        PendingSample& ps = early_clean_pending_samples[ps_id];
+        if (ps.in_cache) {
+            ps.in_cache = false;
+            ps.evicted = 1;
+            ps.eviction_cycle = cycle;
+            ps.time_to_eviction = cycle - ps.sample_cycle;
+            ps.dirty_at_eviction = block[set][way].dirty;
+            if (ps.dirty_at_eviction) {
+                ps.writeback_generated = (lower_level != NULL) ? 1 : 0;
+                // Preserve immutable ps.dirty_start_cycle recorded at sample creation cycle.
+                if (ps.dirty_start_cycle != UINT64_MAX && cycle >= ps.dirty_start_cycle) {
+                    ps.dirty_lifetime = cycle - ps.dirty_start_cycle;
+                } else {
+                    ps.dirty_lifetime = UINT64_MAX;
+                }
+            } else {
+                ps.dirty_lifetime = UINT64_MAX;
+            }
+            emit_early_clean_outcome(ps);
+        }
+        it = early_clean_active_samples.erase(it);
+    }
+}
+
+void CACHE::emit_early_clean_outcome(const PendingSample& ps)
+{
+    uint32_t target_cpu = (ps.cpu < NUM_CPUS) ? ps.cpu : 0;
+    if (!early_clean_outcomes_output[target_cpu].is_open())
+        return;
+
+    early_clean_outcomes_output[target_cpu] << ps.sample_id << ',';
+    early_clean_outcomes_output[target_cpu] << +ps.reuse_within_K << ',';
+    early_clean_outcomes_output[target_cpu] << +ps.demand_reused << ',';
+
+    if (ps.demand_reused && ps.first_reuse_type != 255)
+        early_clean_outcomes_output[target_cpu] << +ps.first_reuse_type;
+    early_clean_outcomes_output[target_cpu] << ',';
+
+    if (ps.demand_reused && ps.next_demand_access_cycle != UINT64_MAX)
+        early_clean_outcomes_output[target_cpu] << ps.next_demand_access_cycle;
+    early_clean_outcomes_output[target_cpu] << ',';
+
+    if (ps.demand_reused && ps.time_to_next_demand_access != UINT64_MAX)
+        early_clean_outcomes_output[target_cpu] << ps.time_to_next_demand_access;
+    early_clean_outcomes_output[target_cpu] << ',';
+
+    early_clean_outcomes_output[target_cpu] << +ps.rewritten << ',';
+
+    if (ps.rewritten && ps.next_write_cycle != UINT64_MAX)
+        early_clean_outcomes_output[target_cpu] << ps.next_write_cycle;
+    early_clean_outcomes_output[target_cpu] << ',';
+
+    if (ps.rewritten && ps.time_to_next_write != UINT64_MAX)
+        early_clean_outcomes_output[target_cpu] << ps.time_to_next_write;
+    early_clean_outcomes_output[target_cpu] << ',';
+
+    early_clean_outcomes_output[target_cpu] << +ps.evicted << ',';
+
+    if (ps.evicted && ps.eviction_cycle != UINT64_MAX)
+        early_clean_outcomes_output[target_cpu] << ps.eviction_cycle;
+    early_clean_outcomes_output[target_cpu] << ',';
+
+    if (ps.evicted && ps.time_to_eviction != UINT64_MAX)
+        early_clean_outcomes_output[target_cpu] << ps.time_to_eviction;
+    early_clean_outcomes_output[target_cpu] << ',';
+
+    if (ps.evicted && ps.dirty_at_eviction != UINT8_MAX)
+        early_clean_outcomes_output[target_cpu] << +ps.dirty_at_eviction;
+    early_clean_outcomes_output[target_cpu] << ',';
+
+    if (ps.dirty_start_cycle != UINT64_MAX)
+        early_clean_outcomes_output[target_cpu] << ps.dirty_start_cycle;
+    early_clean_outcomes_output[target_cpu] << ',';
+
+    if (ps.dirty_lifetime != UINT64_MAX)
+        early_clean_outcomes_output[target_cpu] << ps.dirty_lifetime;
+    early_clean_outcomes_output[target_cpu] << ',';
+
+    early_clean_outcomes_output[target_cpu] << +ps.writeback_generated << '\n';
+}
+
+void CACHE::finalize_all_pending_samples(uint64_t current_cycle)
+{
+    if (cache_type != IS_LLC)
+        return;
+
+    for (auto& pair : early_clean_pending_samples) {
+        PendingSample& ps = pair.second;
+        if (ps.in_cache) {
+            ps.in_cache = false;
+            ps.evicted = 0;
+            ps.eviction_cycle = UINT64_MAX;
+            ps.time_to_eviction = UINT64_MAX;
+            ps.dirty_at_eviction = UINT8_MAX;
+
+            // Preserve immutable ps.dirty_start_cycle recorded at sample creation cycle.
+            if (ps.dirty_start_cycle != UINT64_MAX && current_cycle >= ps.dirty_start_cycle) {
+                ps.dirty_lifetime = current_cycle - ps.dirty_start_cycle;
+            } else {
+                ps.dirty_lifetime = UINT64_MAX;
+            }
+            emit_early_clean_outcome(ps);
+        }
+    }
+    early_clean_active_samples.clear();
+
+    for (uint32_t i = 0; i < NUM_CPUS; ++i) {
+        if (early_clean_features_output[i].is_open()) early_clean_features_output[i].flush();
+        if (early_clean_outcomes_output[i].is_open()) early_clean_outcomes_output[i].flush();
+    }
 }
 
 void CACHE::handle_fill()
@@ -316,6 +515,8 @@ void CACHE::handle_fill()
             sim_miss[fill_cpu][MSHR.entry[mshr_index].type]++;
             sim_access[fill_cpu][MSHR.entry[mshr_index].type]++;
 
+            if (cache_type == IS_LLC)
+                finalize_llc_eviction(set, way, current_core_cycle[fill_cpu], "handle_fill");
             fill_cache(set, way, &MSHR.entry[mshr_index]);
 
 
@@ -426,6 +627,9 @@ void CACHE::handle_writeback()
                     block[set][way].dirty_since_cycle = current_core_cycle[writeback_cpu];
             }
             block[set][way].dirty = 1;
+            if (cache_type == IS_LLC) {
+                snapshot_llc_candidate(writeback_cpu, set, way, current_core_cycle[writeback_cpu], "wb_hit");
+            }
            
 
             if (cache_type == IS_ITLB)
@@ -681,6 +885,8 @@ void CACHE::handle_writeback()
                     sim_miss[writeback_cpu][WQ.entry[index].type]++;
                     sim_access[writeback_cpu][WQ.entry[index].type]++;
 
+                    if (cache_type == IS_LLC)
+                        finalize_llc_eviction(set, way, current_core_cycle[writeback_cpu], "handle_wb");
                     fill_cache(set, way, &WQ.entry[index]);
 
                     // mark dirty
@@ -1379,6 +1585,9 @@ void CACHE::fill_cache(uint32_t set, uint32_t way, PACKET *packet)
         block[set][way].preuse_distance = UINT64_MAX;
         block[set][way].hits_since_insertion = 0;
         block[set][way].last_access_type = packet->type;
+
+        if (block[set][way].dirty)
+            snapshot_llc_candidate(packet->cpu, set, way, current_core_cycle[packet->cpu], "fill_cache");
     }
 
 
@@ -1442,6 +1651,8 @@ int CACHE::invalidate_entry(uint64_t inval_addr)
     for (uint32_t way=0; way<NUM_WAY; way++) {
         if (block[set][way].valid && (block[set][way].tag == inval_addr)) {
 
+            if (cache_type == IS_LLC)
+                finalize_llc_eviction(set, way, current_core_cycle[cpu]);
             block[set][way].valid = 0;
 
             match_way = way;
